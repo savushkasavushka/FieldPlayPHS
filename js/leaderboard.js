@@ -4,9 +4,10 @@ import { CONFIG } from './config.js';
 const LS_KEY = 'fieldx_scores_v1';
 export const online = Boolean(CONFIG.SUPABASE_URL && CONFIG.SUPABASE_ANON_KEY);
 
+// Старый ключ anon — это JWT (eyJ…), его же передаём как Bearer. Новый publishable (sb_publishable_…) — только в apikey.
 const headers = () => ({
   apikey: CONFIG.SUPABASE_ANON_KEY,
-  Authorization: `Bearer ${CONFIG.SUPABASE_ANON_KEY}`,
+  ...(CONFIG.SUPABASE_ANON_KEY.startsWith('eyJ') ? { Authorization: `Bearer ${CONFIG.SUPABASE_ANON_KEY}` } : {}),
   'Content-Type': 'application/json',
 });
 

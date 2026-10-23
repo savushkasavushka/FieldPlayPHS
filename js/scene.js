@@ -125,8 +125,8 @@ export class GameScene {
     this.canvas.addEventListener('contextmenu', e => e.preventDefault());
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0b1013);
-    this.scene.fog = new THREE.Fog(0x0b1013, 70, 160);
+    this.scene.background = new THREE.Color(0x020a09);
+    this.scene.fog = new THREE.Fog(0x020a09, 70, 160);
     this.camera = new THREE.PerspectiveCamera(42, 1, 0.3, 500);
     this.scene.add(new THREE.HemisphereLight(0xdfe9f3, 0x2a2a20, 1.4));
     const sun = new THREE.DirectionalLight(0xfff1dc, 1.8);
@@ -279,7 +279,7 @@ export class GameScene {
     }
     for (const id of [...this.items.keys()]) this.removeItem(id);
 
-    this.outer = new THREE.Mesh(new THREE.PlaneGeometry(260, 260), new THREE.MeshLambertMaterial({ color: 0x18231c, transparent: true }));
+    this.outer = new THREE.Mesh(new THREE.PlaneGeometry(260, 260), new THREE.MeshLambertMaterial({ color: 0x0c201c, transparent: true }));
     this.outer.rotation.x = -Math.PI / 2;
     this.outer.position.y = -0.03;
     this.fieldGroup.add(this.outer);

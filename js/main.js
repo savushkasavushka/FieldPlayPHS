@@ -492,9 +492,9 @@ function renderLayers() {
 
 function renderRules() {
   $('#rules').innerHTML = `<div class="slogans">
-      <div>🛢️ Бури там, где <em>оранжево</em>!</div>
-      <div>🔗 Веди нефть в 🏭 УПН и к 🚩</div>
-      <div>💰 Бюджет один — не транжирь!</div>
+      <div>🛢️ Бури, где <em>оранжево</em>!</div>
+      <div>🔗 Нефть → 🏭 УПН → 🚩</div>
+      <div>💰 Бюджет один на всё!</div>
       <div>🏆 Больше ЧДД — выше в топе!</div>
     </div>
     <div class="el-head">Что можно построить</div>
@@ -726,7 +726,7 @@ function showResults(sim) {
     <div class="muted small center">В рейтинге остаётся лучший результат каждого игрока.</div>`;
   chart($('#chOil'), { data, key: 'oil', kind: 'bar', color: '#d95926', unit: 'тыс. т', label: 'Добыча нефти по годам' });
   chart($('#chWc'), { data, key: 'wc', kind: 'line', color: '#3987e5', unit: '%', label: 'Обводнённость по годам' });
-  chart($('#chCum'), { data: cumData, key: 'cum', kind: 'line', color: '#199e70', unit: 'млн ₽', label: 'Накопленный дисконтированный денежный поток' });
+  chart($('#chCum'), { data: cumData, key: 'cum', kind: 'line', color: '#049c8c', unit: 'млн ₽', label: 'Накопленный дисконтированный денежный поток' });
   $('#resBody').scrollTop = 0;
   renderResStatus();
   renderPlayer(true);
