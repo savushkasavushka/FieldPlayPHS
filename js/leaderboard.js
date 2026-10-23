@@ -29,7 +29,7 @@ export let lastError = null;
 export async function fetchScores(scenario) {
   if (online) {
     try {
-      const url = `${CONFIG.SUPABASE_URL}/rest/v1/scores?select=player,npv,oil_kt,kin,wells,created_at&scenario=eq.${encodeURIComponent(scenario)}&order=npv.desc&limit=1000`;
+      const url = `${CONFIG.SUPABASE_URL}/rest/v1/scores?select=id,player,npv,oil_kt,kin,wells,created_at&scenario=eq.${encodeURIComponent(scenario)}&order=npv.desc&limit=1000`;
       const res = await fetch(url, { headers: headers() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       lastError = null;
@@ -41,12 +41,21 @@ export async function fetchScores(scenario) {
   return bestPerPlayer(localAll().filter(r => r.scenario === scenario));
 }
 
+// Расстановка объектов из записи рейтинга: онлайн — отдельным запросом по id, локально — прямо в записи
+export async function fetchProject(row) {
+  if (row.project) return row.project;
+  if (!online || row.id == null) return null;
+  const res = await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/scores?select=project&id=eq.${encodeURIComponent(row.id)}`, { headers: headers() });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return (await res.json())[0]?.project || null;
+}
+
 export async function submitScore(rec) {
   const row = { ...rec, created_at: new Date().toISOString() };
   try {
     const all = localAll();
     all.push(row);
-    localStorage.setItem(LS_KEY, JSON.stringify(all.slice(-500)));
+    localStorage.setItem(LS_KEY, JSON.stringify(all.slice(-200)));
   } catch { /* хранилище недоступно */ }
   if (!online) return { ok: true, online: false };
   try {
@@ -61,4 +70,16 @@ export async function submitScore(rec) {
     lastError = e.message;
     return { ok: false, online: true, error: e.message };
   }
+}
+
+// Очистка рейтинга: пароль проверяет сама база (функция clear_scores), в коде сайта его нет
+export async function clearScores(pin) {
+  if (online) {
+    const res = await fetch(`${CONFIG.SUPABASE_URL}/rest/v1/rpc/clear_scores`, {
+      method: 'POST', headers: headers(), body: JSON.stringify({ pin }),
+    });
+    if (!res.ok) return { ok: false, error: res.status === 400 || res.status === 401 || res.status === 403 ? 'Неверный пароль' : `HTTP ${res.status}` };
+  }
+  try { localStorage.removeItem(LS_KEY); } catch { /* хранилище недоступно */ }
+  return { ok: true };
 }

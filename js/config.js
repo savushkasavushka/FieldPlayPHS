@@ -1,6 +1,5 @@
-// Общий онлайн-рейтинг через Supabase (бесплатно). Инструкция в README.md.
-// Пока поля пустые, рейтинг хранится только в этом браузере.
+// Онлайн-рейтинг (Supabase). Ключ publishable — публичный: таблица защищена правилами из supabase.sql.
 export const CONFIG = {
-  SUPABASE_URL: '',       // например 'https://abcdefgh.supabase.co'
-  SUPABASE_ANON_KEY: '',  // публичный anon key из Project Settings → API
+  SUPABASE_URL: 'https://ajozzjibsafjivjiuhon.supabase.co',
+  SUPABASE_ANON_KEY: 'sb_publishable_yjUGb7Y22Nf95f9ey0SSHw_E-YfabiL',
 };

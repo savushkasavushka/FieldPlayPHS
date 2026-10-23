@@ -68,6 +68,7 @@ const app = {
   scores: [],
   result: null, resOpen: false, npConfirm: false,
   baseId: 'training',
+  view: null, // просмотр чужого проекта или эталона
 };
 
 const scene = new GameScene($('#viewport'));
@@ -104,6 +105,7 @@ function effectiveScenario(base) {
 function loadScenario(id) {
   const base = SCENARIOS.find(s => s.id === id) || SCENARIOS[0];
   const sc = effectiveScenario(base);
+  dropView();
   app.baseId = base.id;
   app.sc = sc;
   app.field = buildField(sc);
@@ -139,6 +141,7 @@ function snapshot() {
 }
 
 function undo() {
+  if (app.view) return exitView();
   const s = app.history.pop();
   if (!s) return toast('Нечего отменять');
   app.state = JSON.parse(s);
@@ -147,6 +150,7 @@ function undo() {
 }
 
 function changed() {
+  if (app.view) return recompute();
   store.set('fieldx_project_' + app.baseId, app.state);
   if (app.result && !app.result.stale) { app.result.stale = true; const s = $('#resStale'); if (s) s.hidden = false; }
   recompute();
@@ -203,6 +207,7 @@ function placeObject(type, x, z) {
   else if (app.autoPipe && type === 'dns') auto = autoConnect(o, ['upn']);
   else if (app.autoPipe && (type === 'npz' || type === 'gtes')) auto = autoConnect(o, ['upn']);
   app.selected = { kind: 'obj', id: o.id };
+  if (app.tool) disarm();
   changed();
   buzz();
   if (isWell(type) && !auto && app.autoPipe) toast('Рядом нет ДНС/УПН. Проведите трубопровод инструментом 🔗');
@@ -240,6 +245,7 @@ function addPipe(aId, bId) {
   const id = app.state.nextId++;
   app.state.pipes.push({ id, a: aId, b: bId });
   app.selected = { kind: 'pipe', id };
+  if (app.tool) disarm();
   changed();
   buzz();
   toast(`Трубопровод ${a.label} → ${b.label}: ${nf(distM(a, b) / 1000, 1)} км, ${nf(c)} млн ₽`);
@@ -247,7 +253,7 @@ function addPipe(aId, bId) {
 
 function deleteSelected() {
   const s = app.selected;
-  if (!s) return;
+  if (!s || app.view) return;
   if (s.kind === 'pipe') {
     snapshot();
     app.state.pipes = app.state.pipes.filter(p => p.id !== s.id);
@@ -270,7 +276,7 @@ function select(sel) {
 
 function editHoriz(fn) {
   const o = byId(app.selected?.id);
-  if (!o || o.type !== 'horiz') return;
+  if (!o || o.type !== 'horiz' || app.view) return;
   snapshot();
   const before = { len: o.len, angle: o.angle };
   fn(o);
@@ -299,6 +305,10 @@ function onDown(e) {
   if (e.pointerType === 'mouse' && e.button !== 0) return;
   const hit = scene.pick(e.clientX, e.clientY);
   const base = { pid: e.pointerId, sx: e.clientX, sy: e.clientY, t: performance.now(), moved: false, hit };
+  if (app.view) {
+    drag = { ...base, kind: 'tap' }; // в режиме просмотра объекты только смотрим
+    return;
+  }
   if (app.tool === 'pipe' && hit?.kind === 'obj') {
     drag = { ...base, kind: 'pipe', id: hit.id };
   } else if (hit?.kind === 'toe') {
@@ -404,12 +414,14 @@ function renderPalette() {
     return `<button class="tool ${app.tool === t ? 'armed' : ''}" data-tool="${t}" title="${esc(isPipe ? 'Соединить объекты трубопроводом' : CATALOG[t].name)}">
       <span class="ti">${icon}</span><span class="tn">${esc(name)}</span><span class="tc">${cost} млн ₽</span></button>`;
   }).join('');
-  $('#armHint').hidden = !app.tool;
-  if (app.tool) {
-    $('#armHint').innerHTML = app.tool === 'pipe'
-      ? '🔗 Проведите пальцем от объекта к объекту (или коснитесь двух объектов по очереди) <button data-act="disarm">Готово</button>'
-      : `${CATALOG[app.tool].icon} Касайтесь карты, чтобы ставить: ${esc(CATALOG[app.tool].short)} <button data-act="disarm">Готово</button>`;
-  }
+}
+
+// Инструмент разовый: выбрал — поставил один объект — выбор снят
+function arm(tool) {
+  app.tool = app.tool === tool ? null : tool;
+  app.pipeFrom = null;
+  renderPalette();
+  if (app.tool === 'pipe') toast('🔗 Проведите пальцем от объекта к объекту или коснитесь двух объектов по очереди', 3500);
 }
 
 $('#palette').addEventListener('pointerdown', e => {
@@ -439,12 +451,8 @@ function paletteUp(e) {
   const p = paletteDrag;
   paletteDrag = null;
   scene.hideGhost();
-  if (!p.moved) {
-    app.tool = app.tool === p.tool ? null : p.tool;
-    app.pipeFrom = null;
-    renderPalette();
-    return;
-  }
+  if (app.view) return;
+  if (!p.moved) return arm(p.tool);
   if (p.tool === 'pipe') return;
   const g = overCanvas(e) && scene.groundPoint(e.clientX, e.clientY);
   if (g) placeObject(p.tool, g.x, g.z);
@@ -625,9 +633,9 @@ function renderSelCard() {
       <button class="icon-btn small" data-act="close" aria-label="Закрыть">✕</button></div>
     ${status ? `<div class="sc-status">${status}</div>` : ''}
     <table class="sc-rows">${rows.filter(r => !r.more).map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>
-    ${extra}
+    ${app.view ? '' : extra}
     ${rows.some(r => r.more) ? `<details class="sc-more"><summary>Подробнее</summary><table class="sc-rows">${rows.filter(r => r.more).map(r => `<tr><td>${r.k}</td><td>${r.v}</td></tr>`).join('')}</table></details>` : ''}
-    ${canDelete ? '<div class="sc-actions"><button class="btn danger" data-act="delete">🗑 Удалить</button></div>' : ''}`;
+    ${canDelete && !app.view ? '<div class="sc-actions"><button class="btn danger" data-act="delete">🗑 Удалить</button></div>' : ''}`;
   el.hidden = false;
 }
 
@@ -646,7 +654,7 @@ function renderLeaderboard() {
   const hl = app.player.toLowerCase();
   const myIdx = hl ? app.scores.findIndex(s => s.player.trim().toLowerCase() === hl) : -1;
   const mode = LB.online ? (LB.lastError ? '<span class="dot warn"></span>нет связи' : '<span class="dot ok"></span>онлайн') : '';
-  const row = (s, i) => `<li class="${i === myIdx ? 'me' : ''}"><span class="rk">${i < 3 ? ['🥇', '🥈', '🥉'][i] : i + 1}</span><span class="pl">${esc(s.player)}</span><span class="sc">${nf(s.npv)}</span></li>`;
+  const row = (s, i) => `<li class="${i === myIdx ? 'me' : ''}" data-act="view-score" data-i="${i}" title="Открыть поле игрока"><span class="rk">${i < 3 ? ['🥇', '🥈', '🥉'][i] : i + 1}</span><span class="pl">${esc(s.player)}</span><span class="sc">${nf(s.npv)}</span></li>`;
   const open = app.fold.lb;
   el.classList.toggle('collapsed', !open);
   if (!open) {
@@ -656,7 +664,101 @@ function renderLeaderboard() {
   el.innerHTML = `<button class="fold-head lb-head" data-act="fold" data-fold="lb">🏆 Рейтинг <span class="lb-scn">${esc(app.sc.name)}</span>${chev(true)}</button>
     <div class="lb-sub">ЧДД, млн ₽ ${mode}</div>
     <ol class="lb-list">${app.scores.length ? app.scores.slice(0, 10).map(row).join('') : '<li class="empty">Пока никого.<br>Станьте первым!</li>'}
-    ${myIdx >= 10 ? `<li class="sep">…</li>${row(app.scores[myIdx], myIdx)}` : ''}</ol>`;
+    ${myIdx >= 10 ? `<li class="sep">…</li>${row(app.scores[myIdx], myIdx)}` : ''}</ol>
+    ${app.scores.length ? '<div class="lb-hint">Коснитесь имени — откроется поле игрока</div>' : ''}`;
+}
+
+// Скрытая кнопка: долгое нажатие на заголовок «Рейтинг» показывает эталонную расстановку
+let lbPress = null, lbFired = false, swallowClick = false;
+$('#leaderboard').addEventListener('pointerdown', e => {
+  if (!e.target.closest('.lb-head')) return;
+  clearTimeout(lbPress);
+  lbFired = false;
+  lbPress = setTimeout(() => { lbPress = null; lbFired = true; showEtalon(); }, 900);
+});
+for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) {
+  $('#leaderboard').addEventListener(ev, () => {
+    clearTimeout(lbPress);
+    lbPress = null;
+    // клик после долгого нажатия не должен ещё и сворачивать панель
+    if (lbFired && ev === 'pointerup') { swallowClick = true; setTimeout(() => { swallowClick = false; }, 400); }
+    lbFired = false;
+  });
+}
+document.addEventListener('click', e => { if (swallowClick) { swallowClick = false; e.stopPropagation(); e.preventDefault(); } }, true);
+
+// ---------- Просмотр: эталон или поле игрока из рейтинга ----------
+// Свой проект откладываем в сторону, показываем чужой с раскрытыми итогами, «Вернуться» всё восстанавливает
+function enterView(state, title, who) {
+  if (!app.view) app.view = { saved: { state: app.state, history: app.history, result: app.result } };
+  app.view.title = title;
+  disarm();
+  app.state = state;
+  app.history = [];
+  app.selected = null;
+  recompute();
+  document.body.classList.add('viewing');
+  $('#viewBar').hidden = false;
+  $('#viewBar').innerHTML = `<span>👁 ${esc(title)}</span><button class="btn primary" data-act="exit-view">↩ Мой проект</button>`;
+  if (app.an.prods.some(p => p.status === 'ok')) showResults(app.sim, { view: who });
+  else { app.result = null; setResultsOpen(false); toast('В этом проекте нет работающих скважин'); }
+  scene.resetCamera();
+}
+
+// Выйти из просмотра без восстановления (дальше проект всё равно перезагружается)
+function dropView() {
+  app.view = null;
+  document.body.classList.remove('viewing');
+  $('#viewBar').hidden = true;
+}
+
+function exitView() {
+  if (!app.view) return;
+  const s = app.view.saved;
+  app.view = null;
+  document.body.classList.remove('viewing');
+  $('#viewBar').hidden = true;
+  app.state = s.state;
+  app.history = s.history;
+  app.selected = null;
+  recompute();
+  app.result = null;
+  if (s.result) showResults(app.sim, { keep: s.result, open: false });
+  else setResultsOpen(false);
+  renderPlayer(true);
+}
+
+async function viewScore(i) {
+  const s = app.scores[i];
+  if (!s) return;
+  let project;
+  try { project = await LB.fetchProject(s); } catch (err) { return toast(`Не удалось загрузить поле: ${err.message}`); }
+  if (!project?.objects) return toast('Для этой записи расстановка не сохранилась');
+  enterView(project, `Поле игрока ${s.player} · ${i + 1}-е место`, s.player);
+}
+
+const etalonCache = new Map();
+function showEtalon() {
+  const sc = app.sc;
+  if (etalonCache.has(sc.id)) return enterView(JSON.parse(etalonCache.get(sc.id)), '⭐ Эталонная расстановка', '⭐ Эталон');
+  $('#modal-root').innerHTML = `<div class="calc-overlay"><div class="calc-box">
+    <div class="calc-label">Подбираем эталонную расстановку</div>
+    <div class="calc-year" id="eWells">0</div><div class="muted">скважин · ЧДД <b id="eNpv">…</b> млн ₽</div></div></div>`;
+  const w = new Worker(new URL('./optimizer.js', import.meta.url), { type: 'module' });
+  w.onmessage = e => {
+    if (e.data.progress) {
+      $('#eWells').textContent = e.data.progress.wells;
+      $('#eNpv').textContent = nf(e.data.progress.npv);
+      return;
+    }
+    w.terminate();
+    closeModal();
+    if (app.sc.id !== sc.id) return;
+    etalonCache.set(sc.id, JSON.stringify(e.data.state));
+    enterView(e.data.state, '⭐ Эталонная расстановка', '⭐ Эталон');
+  };
+  w.onerror = err => { w.terminate(); closeModal(); toast(`Не удалось подобрать эталон: ${err.message || 'ошибка'}`); };
+  w.postMessage({ sc, fresh: freshState(sc) });
 }
 
 // ---------- Расчёт ----------
@@ -695,16 +797,19 @@ function runCalc() {
 }
 
 // Итоги — вкладка справа: слева остаётся карта, справа результаты
-function showResults(sim) {
-  const sc = app.sc, an = app.an;
-  app.result = {
+// opts.view — чужой проект (только смотреть), opts.keep — вернуть свои прежние итоги без повторной отправки
+function showResults(sim, opts = {}) {
+  const sc = app.sc, an = app.an, view = opts.view;
+  const { objects, pipes, counters, nextId } = app.state;
+  app.result = opts.keep ? { ...opts.keep } : {
     rec: {
       player: app.player, scenario: sc.id, npv: Math.round(sim.npv),
       oil_kt: Math.round(sim.cumOilT / 1000), kin: Math.round(sim.kin * 1000) / 1000,
       capex: Math.round(sim.capex), wells: an.prods.length + an.injs.length,
+      project: JSON.parse(JSON.stringify({ objects, pipes, counters, nextId })),
     },
     place: app.scores.filter(s => s.npv > sim.npv).length + 1,
-    submitted: false, sending: false, stale: false,
+    submitted: !!view, sending: false, stale: false, view,
   };
   const tiles = [
     ['Добыча за 20 лет', `${nf(sim.cumOilT / 1000)}`, 'тыс. т'],
@@ -721,15 +826,16 @@ function showResults(sim) {
   const cumData = [{ year: START_YEAR, cum: -sim.capex }, ...data];
   $('#resBody').innerHTML = `
     <div class="res-head">
-      <div class="muted">Итоги · ${esc(sc.name)}</div>
-      <div class="hero"><span class="hero-label">${term('ЧДД')} — ваши очки</span>
+      <div class="muted">Итоги · ${esc(sc.name)}${view ? ` · <b>${esc(view)}</b>` : ''}</div>
+      <div class="hero"><span class="hero-label">${term('ЧДД')}${view ? '' : ' — ваши очки'}</span>
         <span class="hero-num ${sim.npv < 0 ? 'neg' : ''}">${nf(sim.npv)}</span><span class="hero-unit">млн ₽</span></div>
       <div id="resStatus"></div>
-      <div id="resStale" class="stale" hidden>✏️ Проект изменён — нажмите ▶ «Рассчитать» ещё раз</div>
+      <div id="resStale" class="stale" ${app.result.stale ? '' : 'hidden'}>✏️ Проект изменён — нажмите ▶ «Рассчитать» ещё раз</div>
     </div>
-    <div class="res-actions">
-      <button class="btn big" data-act="results-toggle">✏️ Улучшить проект</button>
-      <button class="btn big" data-act="new-player-now">🔄 Новый игрок</button>
+    <div class="res-actions">${view
+      ? '<button class="btn big primary" data-act="exit-view">↩ Вернуться к своему проекту</button>'
+      : `<button class="btn big" data-act="results-toggle">✏️ Улучшить проект</button>
+      <button class="btn big" data-act="new-player-now">🔄 Новый игрок</button>`}
     </div>
     <div class="tiles">${tiles.map(([k, v, u]) => `<div class="tile"><div class="t-k">${k}</div><div class="t-v">${v}</div><div class="t-u">${u}</div></div>`).join('')}</div>
     <div class="charts">
@@ -750,13 +856,18 @@ function showResults(sim) {
   $('#resBody').scrollTop = 0;
   renderResStatus();
   renderPlayer(true);
-  setResultsOpen(true);
-  if (app.player) submitResult();
+  setResultsOpen(opts.open !== false);
+  if (app.player && !view) submitResult();
 }
 
 function renderResStatus() {
   const el = $('#resStatus'), r = app.result;
   if (!el || !r) return;
+  if (r.view) {
+    const mine = app.scores.find(s => s.player.trim().toLowerCase() === app.player.toLowerCase());
+    el.innerHTML = `<div class="muted">${app.an.prods.length + app.an.injs.length} скважин · CAPEX ${nf(app.an.capex.total)} млн ₽${mine ? ` · у вас ${nf(mine.npv)}` : ''}</div>`;
+    return;
+  }
   const placeTxt = n => n === 1 ? '🥇 <b>1-е место!</b>' : `<b>${n}-е место</b>`;
   if (r.submitted) {
     el.innerHTML = `<div class="submitted">✔ ${esc(r.rec.player)} в рейтинге${r.idx >= 0 ? `: ${placeTxt(r.idx + 1)} из ${app.scores.length}` : ''}</div>`;
@@ -820,6 +931,7 @@ function newPlayer(force = false) {
   }
   clearTimeout(newPlayer.t);
   app.npConfirm = false;
+  dropView();
   closeModal();
   app.result = null;
   setResultsOpen(false);
@@ -852,6 +964,7 @@ function showMenu() {
       <button class="btn big" data-act="params">⚙️ Настройки пласта и нефти <span class="muted">${app.sc.custom ? 'изменены ✎' : 'поменять толщину, проницаемость, вязкость…'}</span></button>
       <button class="btn big" data-act="scenarios">🗺️ Другое месторождение <span class="muted">сейчас: ${esc(app.sc.name)}</span></button>
       <button class="btn big" data-act="home">⌖ Показать весь участок</button>
+      <button class="btn big" data-act="clear-lb">🗑 Очистить рейтинг <span class="muted">для организатора, нужен пароль</span></button>
     </div>
     <label class="toggle"><input type="checkbox" id="chkAuto" ${app.autoPipe ? 'checked' : ''}> Автотрубы: новая скважина сама подключается к ближайшей ДНС/УПН (до 1,5 км)</label>`, 'menu');
   $('#chkAuto').addEventListener('change', e => { app.autoPipe = e.target.checked; store.set('fieldx_autopipe', app.autoPipe); });
@@ -890,6 +1003,28 @@ function showParams() {
   const m = $('#modal-root .params');
   m.addEventListener('input', e => { if (e.target.dataset.par) paramsPreview(); });
   paramsPreview();
+}
+
+// ---------- Очистка рейтинга (пароль проверяет база) ----------
+function showClearLb() {
+  openModal(`<h2>🗑 Очистить рейтинг</h2>
+    <p>Удалятся результаты <b>всех игроков на всех месторождениях</b>. Отменить это нельзя.</p>
+    <label class="field-label">Пароль организатора
+      <input id="inPin" type="password" autocomplete="off" enterkeyhint="go"></label>
+    <div class="res-actions"><button class="btn big" data-act="close-modal">Отмена</button>
+      <button class="btn big danger" data-act="clear-lb-go">Очистить</button></div>`, 'clear');
+  $('#inPin').focus();
+  $('#inPin').addEventListener('keydown', e => { if (e.key === 'Enter') clearLb(); });
+}
+
+async function clearLb() {
+  const pin = $('#inPin')?.value.trim();
+  if (!pin) return toast('Введите пароль');
+  const res = await LB.clearScores(pin);
+  if (!res.ok) return toast(res.error, 4000);
+  closeModal();
+  await refreshLeaderboard();
+  toast('Рейтинг очищен');
 }
 
 function readParams() {
@@ -1038,11 +1173,9 @@ document.addEventListener('click', e => {
   if (!e.target.closest('#termpop')) $('#termpop').hidden = true;
   const pick = e.target.closest('[data-pick]');
   if (pick) { closeModal(); if (pick.dataset.pick !== app.baseId) loadScenario(pick.dataset.pick); return; }
-  const arm = e.target.closest('[data-arm]');
-  if (arm) {
-    app.tool = app.tool === arm.dataset.arm ? null : arm.dataset.arm;
-    app.pipeFrom = null;
-    renderPalette();
+  const armEl = e.target.closest('[data-arm]');
+  if (armEl) {
+    if (!app.view) arm(armEl.dataset.arm);
     return;
   }
   const layer = e.target.closest('[data-layer]');
@@ -1076,6 +1209,10 @@ document.addEventListener('click', e => {
     case 'new-player-now': newPlayer(true); break;
     case 'results-toggle': setResultsOpen(!app.resOpen); break;
     case 'params': showParams(); break;
+    case 'clear-lb': showClearLb(); break;
+    case 'clear-lb-go': clearLb(); break;
+    case 'exit-view': exitView(); break;
+    case 'view-score': viewScore(Number(a.dataset.i)); break;
     case 'params-apply': applyParams(); break;
     case 'params-default': applyParams(true); break;
     case 'passport': showPassport(); break;
@@ -1112,5 +1249,4 @@ document.addEventListener('gesturestart', e => e.preventDefault());
 renderRules();
 loadScenario('training');
 setTimeout(() => toast(app.player ? 'Перетащите 🛢️ из нижней панели на оранжевое пятно: там нефть' : 'Впишите имя справа вверху и перетащите 🛢️ на оранжевое пятно', 6000), 600);
-window.addEventListener('resize', layoutCols);
-if (LB.online) setInterval(refreshLeaderboard, 20000);
+window.addEventListener('resize', layoutCols);if (LB.online) setInterval(refreshLeaderboard, 20000);

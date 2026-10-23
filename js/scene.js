@@ -92,7 +92,7 @@ function makeLabel(text) {
 // Цветовые шкалы карты: толщина — от жёлтого к тёмно-красному, проницаемость — голубая,
 // глубина — семицветная радуга (свод красный, крылья синие)
 const RAMPS = {
-  h: ['#fff3b0', '#ffd23f', '#ffa41b', '#f26a1b', '#d63a16', '#a11d0e', '#661005'],
+  h: ['#f6dc8a', '#d9822b', '#7a2e0b'],
   k: ['#e0f3ff', '#a6dcff', '#5fb6f5', '#2f8ce6', '#1f63c4', '#16439b', '#0d2a6e'],
   top: ['#e3241b', '#f5821f', '#f7d31e', '#3dbb3d', '#22b8d6', '#2a6fe0', '#1a2f9e'],
 };
@@ -133,7 +133,7 @@ function sampleCR(arr, N, u, v) {
 const RELIEF = 3.5;      // перепад рельефа на карте, ед. сцены (1 ед. = 100 м)
 const MESH_N = 160;      // разбиение поверхности
 const DATA_N = 256;      // разрешение текстуры свойств
-const MAX_LEV = 16;
+const MAX_LEV = 24;
 
 // Карта: ступенчатая заливка между изолиниями, тонкие сглаженные изолинии, контур ВНК, сетка 500 м
 const MAP_VERT = `
@@ -530,13 +530,13 @@ export class GameScene {
     let lo, hi, vals, norm, fmt;
     if (layer === 'top') {
       lo = f.topMin; hi = f.topMax;
-      const s = niceStep(hi - lo, 8);
+      const s = niceStep(hi - lo, 14);
       vals = []; for (let v = Math.ceil(lo / s + 1e-6) * s; v < hi - 1e-6; v += s) vals.push(v);
       norm = v => (v - lo) / Math.max(1e-6, hi - lo);
       fmt = v => String(Math.round(v));
     } else if (layer === 'h') {
       lo = 0; hi = f.hMax;
-      const s = niceStep(hi, 7);
+      const s = niceStep(hi, 12);
       vals = []; for (let v = s; v < hi - 1e-6; v += s) vals.push(v);
       norm = v => v / Math.max(0.1, hi);
       fmt = v => (s < 1 ? v.toFixed(1) : String(Math.round(v * 10) / 10)).replace('.', ',');
@@ -544,13 +544,13 @@ export class GameScene {
       lo = 10 ** this.lk[0]; hi = 10 ** this.lk[1];
       if (hi / lo < 8) {
         // узкий диапазон — равный шаг в мД
-        const s = niceStep(hi - lo, 7);
+        const s = niceStep(hi - lo, 12);
         vals = []; for (let v = Math.ceil(lo / s + 1e-6) * s; v < hi - 1e-6; v += s) vals.push(v);
       } else {
         const cand = [];
-        for (let e = -1; e <= 5; e++) for (const m of [1, 2, 5]) cand.push(m * 10 ** e);
+        for (let e = -1; e <= 5; e++) for (const m of [1, 1.5, 2, 3, 5, 7]) cand.push(Math.round(m * 10 ** e * 100) / 100);
         vals = cand.filter(v => v > lo * 1.05 && v < hi / 1.05);
-        if (vals.length > 10) vals = vals.filter(v => String(v)[0] !== '2');
+        if (vals.length > 16) vals = vals.filter(v => !/^(1\.5|15|7)/.test(String(v)));
       }
       norm = v => (Math.log10(v) - this.lk[0]) / Math.max(0.05, this.lk[1] - this.lk[0]);
       fmt = v => String(Math.round(v));
