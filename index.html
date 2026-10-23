@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#0b1013">
+  <title>Месторождение Х</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23d9822b'/%3E%3Ctext x='32' y='45' font-size='38' font-family='Arial' font-weight='bold' text-anchor='middle' fill='%230b1013'%3EX%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="viewport"></div>
+
+  <header id="topbar">
+    <div class="brand">
+      <span class="logo">X</span>
+      <div>
+        <div class="title">Месторождение Х</div>
+        <button id="btnScenario" class="link"><span id="scnName">…</span> ▾</button>
+      </div>
+    </div>
+    <div id="budget">
+      <div class="budget-label"><span>Бюджет <small id="budgetLeft"></small></span><b id="budgetText"></b></div>
+      <div class="bar"><div id="budgetFill"></div></div>
+    </div>
+    <div id="layers" class="seg" role="group" aria-label="Свойство пласта на карте"></div>
+    <div class="top-actions">
+      <button id="btnUndo" class="icon-btn wide" title="Отменить последнее действие">↶ Отменить</button>
+      <button id="btn3d" class="icon-btn wide">🧊 3D</button>
+      <button id="btnHelp" class="icon-btn" title="Как играть">?</button>
+      <button id="btnMenu" class="icon-btn" title="Меню и настройки">☰</button>
+    </div>
+  </header>
+
+  <div id="leftcol">
+    <section id="rules" class="panel"></section>
+    <aside id="advisor" class="panel"></aside>
+    <div id="legend" class="panel"></div>
+  </div>
+  <div id="rightcol">
+    <section id="playerbox" class="panel"></section>
+    <aside id="leaderboard" class="panel"></aside>
+  </div>
+  <aside id="results" class="panel" aria-hidden="true">
+    <button id="resTab" data-act="results-toggle" aria-label="Скрыть итоги">›</button>
+    <div id="resBody"></div>
+  </aside>
+  <div id="selcard" class="panel" hidden></div>
+  <div id="armHint" class="panel" hidden></div>
+
+  <nav id="palette" class="panel"></nav>
+  <button id="btnCalc"><span class="play">▶</span><span>Рассчитать</span></button>
+
+  <div id="termpop" class="panel" hidden></div>
+  <div id="toast"></div>
+  <div id="modal-root"></div>
+
+  <noscript>Для игры нужен JavaScript.</noscript>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

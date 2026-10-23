@@ -1,0 +1,83 @@
+// Готовые сценарии месторождения. Координаты структур и пункта сдачи — в км (участок 4×4 км).
+// reservoir: domes — купола (amp, м), baseTop — кровля вне структуры, owc — отметка ВНК,
+//   decline — темп падения дебита жидкости без ППД (1/год), edep/ewf — коэф. охвата на истощении / при заводнении.
+// pvt: muO/muW — вязкость нефти/воды (мПа·с), bo — объёмный коэффициент, rho — плотность (т/м³),
+//   gor — газовый фактор (м³/т), pb — давление насыщения (МПа).
+// econ: price — нетбэк ₽/т, ndpi — доля НДПИ от выручки, opexLiq — ₽/м³ жидкости,
+//   opexWell/opexInj — млн ₽/год на скважину, flareFine — ₽ за 1000 м³ сожжённого ПНГ,
+//   npzUplift — доп. маржа мини-НПЗ, ₽/т, discount — ставка дисконтирования.
+
+export const SCENARIOS = [
+  {
+    id: 'training',
+    name: 'Учебное',
+    difficulty: 1,
+    seed: 101,
+    budget: 6000,
+    description: 'Одна симметричная структура и лёгкая нефть. Хорошо подходит для первого знакомства.',
+    tip: 'Ставьте скважины на оранжевую зону и не слишком близко друг к другу.',
+    reservoir: {
+      domes: [{ x: 2.2, y: 2.0, amp: 60, sx: 0.95, sy: 0.8 }],
+      baseTop: 2560, owc: 2540, topNoise: 5,
+      hGross: 14, kMean: 120, kVar: 0.6, phiMean: 0.21, soMean: 0.72,
+      decline: 0.14, edep: 0.35, ewf: 0.75,
+    },
+    pvt: { muO: 1.8, muW: 0.45, bo: 1.25, rho: 0.84, gor: 70, pb: 9.5 },
+    econ: { price: 30000, ndpi: 0.38, opexLiq: 700, opexWell: 5, opexInj: 3, flareFine: 2500, npzUplift: 3500, discount: 0.12 },
+    export: { x: 0.15, y: 2.0 },
+  },
+  {
+    id: 'thin',
+    name: 'Тонкий пласт',
+    difficulty: 2,
+    seed: 202,
+    budget: 7000,
+    description: 'Широкая пологая структура, нефтенасыщенная толщина всего 2–6 м. Вертикальные скважины дают мало.',
+    tip: 'В тонком пласте горизонтальный ствол вскрывает намного больше коллектора.',
+    reservoir: {
+      domes: [{ x: 2.0, y: 2.0, amp: 18, sx: 1.4, sy: 1.1 }],
+      baseTop: 2310, owc: 2304, topNoise: 1.5,
+      hGross: 6.5, kMean: 110, kVar: 0.5, phiMean: 0.2, soMean: 0.7,
+      decline: 0.16, edep: 0.35, ewf: 0.75,
+    },
+    pvt: { muO: 2.5, muW: 0.45, bo: 1.18, rho: 0.85, gor: 55, pb: 8.0 },
+    econ: { price: 30000, ndpi: 0.38, opexLiq: 700, opexWell: 5, opexInj: 3, flareFine: 2500, npzUplift: 3500, discount: 0.12 },
+    export: { x: 2.0, y: 3.85 },
+  },
+  {
+    id: 'viscous',
+    name: 'Вязкая нефть',
+    difficulty: 3,
+    seed: 303,
+    budget: 6000,
+    description: 'Неглубокий высокопроницаемый пласт с вязкой нефтью (35 мПа·с). Вода прорывается рано, давление быстро падает.',
+    tip: 'Без ППД добыча падает очень быстро. Действует льгота по НДПИ.',
+    reservoir: {
+      domes: [{ x: 1.9, y: 2.1, amp: 45, sx: 0.9, sy: 1.1 }, { x: 2.8, y: 1.4, amp: 20, sx: 0.5, sy: 0.5 }],
+      baseTop: 1250, owc: 1232, topNoise: 4,
+      hGross: 16, kMean: 700, kVar: 0.7, phiMean: 0.27, soMean: 0.75,
+      decline: 0.30, edep: 0.25, ewf: 0.70,
+    },
+    pvt: { muO: 35, muW: 0.6, bo: 1.06, rho: 0.93, gor: 15, pb: 4.0 },
+    econ: { price: 24000, ndpi: 0.30, opexLiq: 700, opexWell: 5, opexInj: 3, flareFine: 2500, npzUplift: 3500, discount: 0.12 },
+    export: { x: 0.2, y: 0.4 },
+  },
+  {
+    id: 'twin',
+    name: 'Два купола',
+    difficulty: 3,
+    seed: 404,
+    budget: 7000,
+    description: 'Маленький купол рядом с пунктом сдачи и большой — в 4 км от него. Лёгкая газированная нефть.',
+    tip: 'Газовый фактор 260 м³/т: без ГТЭС попутный газ уходит на факел, а за это штрафы. Дальний купол требует ДНС.',
+    reservoir: {
+      domes: [{ x: 1.0, y: 1.1, amp: 40, sx: 0.55, sy: 0.5 }, { x: 2.9, y: 2.9, amp: 70, sx: 0.8, sy: 0.9 }],
+      baseTop: 2860, owc: 2835, topNoise: 4,
+      hGross: 12, kMean: 90, kVar: 0.6, phiMean: 0.2, soMean: 0.7,
+      decline: 0.15, edep: 0.35, ewf: 0.75,
+    },
+    pvt: { muO: 1.2, muW: 0.4, bo: 1.45, rho: 0.80, gor: 260, pb: 18 },
+    econ: { price: 30000, ndpi: 0.38, opexLiq: 700, opexWell: 5, opexInj: 3, flareFine: 3000, npzUplift: 3500, discount: 0.12 },
+    export: { x: 0.15, y: 0.3 },
+  },
+];
