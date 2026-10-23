@@ -4,7 +4,7 @@ import {
   CATALOG, HORIZ, PIPE_COST_PER_KM, START_YEAR, YEARS,
   analyze, simulate, buildHints, objectCost, pipeCost, distM, capexOf, isWell, isProducer, horizCost,
 } from './sim.js';
-import { GameScene, RAMP_CSS } from './scene.js';
+import { GameScene } from './scene.js';
 import { chart } from './charts.js';
 import * as LB from './leaderboard.js';
 import { GLOSSARY, termByKey } from './glossary.js';
@@ -63,7 +63,8 @@ const app = {
   an: null, sim: null, hints: [],
   view3d: false, layer: 'h',
   autoPipe: store.get('fieldx_autopipe', true),
-  advisorOpen: true,
+  // Раскрытые панели. На телефоне по умолчанию все свёрнуты до заголовков, чтобы не закрывать карту
+  fold: Object.fromEntries(['rules', 'player', 'lb', 'advisor'].map(k => [k, innerWidth > 700])),
   scores: [],
   result: null, resOpen: false, npConfirm: false,
   baseId: 'training',
@@ -472,26 +473,33 @@ function renderAdvisor() {
   const H = app.hints;
   const icon = { bad: '⛔', warn: '⚠️', tip: '💡' };
   const bad = H.filter(h => h.level === 'bad').length;
-  el.classList.toggle('collapsed', !app.advisorOpen);
-  el.innerHTML = `<button class="adv-head" data-act="advisor">🧑‍🔧 Советник ${H.length ? `<span class="badge ${bad ? 'bad' : ''}">${H.length}</span>` : '<span class="badge ok">✓</span>'}<span class="chev">${app.advisorOpen ? '▾' : '▸'}</span></button>
-    ${app.advisorOpen ? `<ul>${H.length ? H.slice(0, 2).map(h => `<li class="${h.level}">${icon[h.level]} ${esc(h.text)}</li>`).join('') : '<li class="ok">✅ Явных проблем нет. Жмите «Рассчитать».</li>'}</ul>` : ''}`;
+  const open = app.fold.advisor;
+  el.classList.toggle('collapsed', !open);
+  el.innerHTML = `<button class="adv-head" data-act="fold" data-fold="advisor">🧑‍🔧 Советник ${H.length ? `<span class="badge ${bad ? 'bad' : ''}">${H.length}</span>` : '<span class="badge ok">✓</span>'}${chev(open)}</button>
+    ${open ? `<ul>${H.length ? H.slice(0, 2).map(h => `<li class="${h.level}">${icon[h.level]} ${esc(h.text)}</li>`).join('') : '<li class="ok">✅ Явных проблем нет. Жмите «Рассчитать».</li>'}</ul>` : ''}`;
 }
 
 function renderLegend() {
-  const L = LAYERS.find(l => l.id === app.layer), f = app.field;
-  const range = app.layer === 'h' ? [0, f.hMax] : app.layer === 'k' ? [f.kMin, f.kMax] : [f.topMin, f.topMax];
+  const L = LAYERS.find(l => l.id === app.layer), g = scene.legend;
+  // Ступени шкалы как на карте; подписи границ — не больше пяти, чтобы не слипались
+  const n = g.colors.length, every = Math.ceil(g.levels.length / 5);
   $('#legend').innerHTML = `<div class="lg-title">${esc(L.legend)}</div>
-    <div class="lg-bar" style="background:${RAMP_CSS(L.ramp)}"></div>
-    <div class="lg-scale"><span>${nf(range[0])}</span><span>${nf(range[1])}</span></div>
-    <div class="lg-note"><i class="owc"></i> контур ${term('ВНК')} · клетка 100 м</div>`;
+    <div class="lg-steps">${g.colors.map(c => `<i style="background:${c}"></i>`).join('')}</div>
+    <div class="lg-ticks"><span style="left:0">${g.lo}</span>${g.levels.map((v, i) => i % every ? '' : `<span style="left:${(i + 1) / n * 100}%">${v}</span>`).join('')}<span style="left:100%">${g.hi}</span></div>
+    <div class="lg-note"><i class="owc"></i> контур ${term('ВНК')} · сетка 500 м</div>`;
 }
 
 function renderLayers() {
   $('#layers').innerHTML = LAYERS.map(l => `<button class="${l.id === app.layer ? 'on' : ''}" data-layer="${l.id}">${esc(l.name)}</button>`).join('');
 }
 
+const chev = open => `<span class="chev">${open ? '▾' : '▸'}</span>`;
+
 function renderRules() {
-  $('#rules').innerHTML = `<div class="slogans">
+  const open = app.fold.rules;
+  $('#rules').classList.toggle('collapsed', !open);
+  $('#rules').innerHTML = `<button class="fold-head" data-act="fold" data-fold="rules">📜 Правила${chev(open)}</button>
+    ${open ? `<div class="slogans">
       <div>🛢️ Бури, где <em>оранжево</em>!</div>
       <div>🔗 Нефть → 🏭 УПН → 🚩</div>
       <div>💰 Бюджет один на всё!</div>
@@ -499,7 +507,7 @@ function renderRules() {
     </div>
     <div class="el-head">Что можно построить</div>
     <ul class="elements">${ELEMENTS.map(([tool, icon, name, what]) =>
-      `<li ${tool ? `data-arm="${tool}"` : ''}><span class="ei">${icon}</span><span><b>${esc(name)}</b> — ${esc(what)}</span></li>`).join('')}</ul>`;
+      `<li ${tool ? `data-arm="${tool}"` : ''}><span class="ei">${icon}</span><span><b>${esc(name)}</b> — ${esc(what)}</span></li>`).join('')}</ul>` : ''}`;
 }
 
 // ---------- Окно игрока ----------
@@ -511,13 +519,19 @@ let playerKey = '';
 function renderPlayer(force = false) {
   const locked = nameLocked();
   const need = !app.player && roundStarted();
-  const key = [locked, need, !!app.result, app.npConfirm, app.player].join('|');
+  const open = app.fold.player;
+  const key = [locked, need, !!app.result, app.npConfirm, app.player, open].join('|');
   if (!force && key === playerKey) return;
   playerKey = key;
   const el = $('#playerbox');
   el.classList.toggle('need', need);
   el.classList.toggle('locked', locked);
-  el.innerHTML = `<div class="pb-head">👤 Игрок ${locked ? '<span class="pb-lock">🔒 идёт раунд</span>' : ''}</div>
+  el.classList.toggle('collapsed', !open);
+  if (!open) {
+    el.innerHTML = `<button class="fold-head pb-head" data-act="fold" data-fold="player">👤 <span class="pb-name">${app.player ? esc(app.player) : 'Впишите имя'}</span>${locked ? '🔒' : ''}${chev(false)}</button>`;
+    return;
+  }
+  el.innerHTML = `<button class="fold-head pb-head" data-act="fold" data-fold="player">👤 Игрок ${locked ? '<span class="pb-lock">🔒 идёт раунд</span>' : ''}${chev(true)}</button>
     <div class="pb-row">
       <input id="inPlayer" maxlength="24" placeholder="Впишите своё имя" value="${esc(app.player)}" ${locked ? 'disabled' : ''} autocomplete="off" enterkeyhint="done">
       ${locked ? '' : '<button class="btn primary" data-act="name-ok" aria-label="Готово">✔</button>'}
@@ -633,7 +647,13 @@ function renderLeaderboard() {
   const myIdx = hl ? app.scores.findIndex(s => s.player.trim().toLowerCase() === hl) : -1;
   const mode = LB.online ? (LB.lastError ? '<span class="dot warn"></span>нет связи' : '<span class="dot ok"></span>онлайн') : '';
   const row = (s, i) => `<li class="${i === myIdx ? 'me' : ''}"><span class="rk">${i < 3 ? ['🥇', '🥈', '🥉'][i] : i + 1}</span><span class="pl">${esc(s.player)}</span><span class="sc">${nf(s.npv)}</span></li>`;
-  el.innerHTML = `<div class="lb-head">🏆 Рейтинг <span class="lb-scn">${esc(app.sc.name)}</span></div>
+  const open = app.fold.lb;
+  el.classList.toggle('collapsed', !open);
+  if (!open) {
+    el.innerHTML = `<button class="fold-head lb-head" data-act="fold" data-fold="lb">🏆 Рейтинг${myIdx >= 0 ? ` <span class="lb-me">№${myIdx + 1}</span>` : ''}${chev(false)}</button>`;
+    return;
+  }
+  el.innerHTML = `<button class="fold-head lb-head" data-act="fold" data-fold="lb">🏆 Рейтинг <span class="lb-scn">${esc(app.sc.name)}</span>${chev(true)}</button>
     <div class="lb-sub">ЧДД, млн ₽ ${mode}</div>
     <ol class="lb-list">${app.scores.length ? app.scores.slice(0, 10).map(row).join('') : '<li class="empty">Пока никого.<br>Станьте первым!</li>'}
     ${myIdx >= 10 ? `<li class="sep">…</li>${row(app.scores[myIdx], myIdx)}` : ''}</ol>`;
@@ -776,6 +796,19 @@ function setResultsOpen(open) {
   scene.setShift(app.resOpen && innerWidth > 900 ? el.offsetWidth / 2 : 0);
 }
 
+// Колонки панелей — между верхней панелью и палитрой, какой бы высоты они ни были на этом экране
+function layoutCols() {
+  const top = $('#topbar').getBoundingClientRect().bottom + 8;
+  const bottom = $('#palette').getBoundingClientRect().top - 8;
+  for (const el of [$('#leftcol'), $('#rightcol')]) {
+    el.style.top = `${Math.round(top)}px`;
+    el.style.maxHeight = `${Math.max(60, Math.round(bottom - top))}px`;
+  }
+  if (app.resOpen) setResultsOpen(true);
+}
+new ResizeObserver(layoutCols).observe($('#topbar'));
+new ResizeObserver(layoutCols).observe($('#palette'));
+
 // Передать планшет следующему: чистый проект, пустое активное поле имени
 function newPlayer(force = false) {
   if (!force && roundStarted() && !app.npConfirm) {
@@ -795,6 +828,7 @@ function newPlayer(force = false) {
   app.selected = null;
   app.player = '';
   store.set('fieldx_player', '');
+  app.fold.player = true;
   disarm();
   changed();
   renderPlayer(true);
@@ -1029,7 +1063,13 @@ document.addEventListener('click', e => {
     case 'rot-': editHoriz(h => { h.angle -= Math.PI / 12; }); break;
     case 'rot+': editHoriz(h => { h.angle += Math.PI / 12; }); break;
     case 'disarm': disarm(); break;
-    case 'advisor': app.advisorOpen = !app.advisorOpen; renderAdvisor(); break;
+    case 'fold': {
+      const k = a.dataset.fold;
+      app.fold[k] = !app.fold[k];
+      ({ rules: renderRules, player: () => renderPlayer(true), lb: renderLeaderboard, advisor: renderAdvisor })[k]();
+      if (app.resOpen) setResultsOpen(true);
+      break;
+    }
     case 'close-modal': closeModal(); break;
     case 'name-ok': commitName($('#inPlayer').value); break;
     case 'new-player': newPlayer(); break;
@@ -1072,5 +1112,5 @@ document.addEventListener('gesturestart', e => e.preventDefault());
 renderRules();
 loadScenario('training');
 setTimeout(() => toast(app.player ? 'Перетащите 🛢️ из нижней панели на оранжевое пятно: там нефть' : 'Впишите имя справа вверху и перетащите 🛢️ на оранжевое пятно', 6000), 600);
-window.addEventListener('resize', () => { if (app.resOpen) setResultsOpen(true); });
+window.addEventListener('resize', layoutCols);
 if (LB.online) setInterval(refreshLeaderboard, 20000);

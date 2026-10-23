@@ -89,23 +89,12 @@ function makeLabel(text) {
   return s;
 }
 
-function stadiumGeometry(len, r) {
-  const s = new THREE.Shape();
-  s.moveTo(0, -r);
-  s.lineTo(len, -r);
-  s.absarc(len, 0, r, -Math.PI / 2, Math.PI / 2, false);
-  s.lineTo(0, r);
-  s.absarc(0, 0, r, Math.PI / 2, Math.PI * 1.5, false);
-  const g = new THREE.ShapeGeometry(s, 24);
-  g.rotateX(-Math.PI / 2);
-  return g;
-}
-
-// Цветовые шкалы карты
+// Цветовые шкалы карты: толщина — от жёлтого к тёмно-красному, проницаемость — голубая,
+// глубина — семицветная радуга (свод красный, крылья синие)
 const RAMPS = {
-  h: ['#f6dc8a', '#d9822b', '#7a2e0b'],
-  k: ['#cde2fb', '#3987e5', '#104281'],
-  top: ['#efe6cf', '#a8865a', '#3d2c1b'],
+  h: ['#fff3b0', '#ffd23f', '#ffa41b', '#f26a1b', '#d63a16', '#a11d0e', '#661005'],
+  k: ['#e0f3ff', '#a6dcff', '#5fb6f5', '#2f8ce6', '#1f63c4', '#16439b', '#0d2a6e'],
+  top: ['#e3241b', '#f5821f', '#f7d31e', '#3dbb3d', '#22b8d6', '#2a6fe0', '#1a2f9e'],
 };
 export function rampColor(name, t) {
   const stops = RAMPS[name].map(h => new THREE.Color(h));
@@ -113,7 +102,103 @@ export function rampColor(name, t) {
   const i = Math.min(stops.length - 2, Math.floor(t));
   return stops[i].clone().lerp(stops[i + 1], t - i);
 }
-export const RAMP_CSS = name => `linear-gradient(90deg, ${RAMPS[name].join(', ')})`;
+// Тот же цвет, но в sRGB-компонентах 0…1 — для шейдера карты (он пишет цвет без пересчёта)
+function rampSRGB(name, t) {
+  const stops = RAMPS[name];
+  t = clamp(t, 0, 1) * (stops.length - 1);
+  const i = Math.min(stops.length - 2, Math.floor(t)), f = t - i;
+  const rgb = h => [1, 3, 5].map(o => parseInt(h.slice(o, o + 2), 16) / 255);
+  const a = rgb(stops[i]), b = rgb(stops[i + 1]);
+  return new THREE.Vector3(a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f);
+}
+const toHex = v => '#' + [v.x, v.y, v.z].map(c => Math.round(c * 255).toString(16).padStart(2, '0')).join('');
+
+// «Круглый» шаг изолиний: 1, 2, 2.5, 5 × 10ⁿ
+function niceStep(range, target) {
+  const raw = range / target, mag = 10 ** Math.floor(Math.log10(raw));
+  return [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= raw) || 10 * mag;
+}
+
+// Бикубическая (Catmull-Rom) выборка из сетки N×N: изолинии получаются гладкими, без изломов по клеткам
+function cr(p0, p1, p2, p3, t) {
+  return p1 + 0.5 * t * (p2 - p0 + t * (2 * p0 - 5 * p1 + 4 * p2 - p3 + t * (3 * (p1 - p2) + p3 - p0)));
+}
+function sampleCR(arr, N, u, v) {
+  const iu = Math.floor(u), iv = Math.floor(v), fu = u - iu, fv = v - iv;
+  const g = (i, j) => arr[clamp(j, 0, N - 1) * N + clamp(i, 0, N - 1)];
+  const row = j => cr(g(iu - 1, j), g(iu, j), g(iu + 1, j), g(iu + 2, j), fu);
+  return cr(row(iv - 1), row(iv), row(iv + 1), row(iv + 2), fv);
+}
+
+const RELIEF = 3.5;      // перепад рельефа на карте, ед. сцены (1 ед. = 100 м)
+const MESH_N = 160;      // разбиение поверхности
+const DATA_N = 256;      // разрешение текстуры свойств
+const MAX_LEV = 16;
+
+// Карта: ступенчатая заливка между изолиниями, тонкие сглаженные изолинии, контур ВНК, сетка 500 м
+const MAP_VERT = `
+varying vec2 vUv; varying vec3 vN; varying vec2 vW;
+#include <fog_pars_vertex>
+void main() {
+  vUv = uv; vN = normal; vW = position.xz;
+  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * mvPosition;
+  #include <fog_vertex>
+}`;
+const MAP_FRAG = `
+uniform sampler2D data; uniform vec4 mask; uniform float levels[${MAX_LEV}]; uniform int nLev;
+uniform vec3 cols[${MAX_LEV + 1}]; uniform float oilOnly; uniform float oilT; uniform vec3 tundra;
+uniform float opacity; uniform vec3 lightDir;
+varying vec2 vUv; varying vec3 vN; varying vec2 vW;
+#include <fog_pars_fragment>
+void main() {
+  vec4 d = texture2D(data, vUv);
+  float v = dot(d, mask);
+  int band = 0; float dist = 1e5;
+  for (int i = 0; i < ${MAX_LEV}; i++) {
+    if (i >= nLev) break;
+    if (v >= levels[i]) band = i + 1;
+    dist = min(dist, abs(v - levels[i]));
+  }
+  vec3 c = cols[band];
+  bool oil = d.g >= oilT;
+  float line = 1.0 - smoothstep(0.45, 1.25, dist / max(fwidth(v), 1e-6));
+  if (oilOnly > 0.5 && !oil) { c = tundra; line = 0.0; }
+  float lum = dot(c, vec3(0.299, 0.587, 0.114));
+  vec3 lc = lum > 0.42 ? c * 0.22 : mix(c, vec3(1.0), 0.65);
+  c = mix(c, lc, line * 0.9);
+  // сетка 500 м
+  vec2 gq = abs(fract(vW / 5.0 - 0.5) - 0.5) / fwidth(vW / 5.0);
+  c = mix(c, vec3(1.0), (1.0 - min(min(gq.x, gq.y), 1.0)) * 0.10);
+  // контур нефтеносности
+  float e = abs(d.g - oilT) / max(fwidth(d.g), 1e-6);
+  c = mix(c, vec3(1.0, 0.96, 0.78), 1.0 - smoothstep(0.7, 1.7, e));
+  // освещение рельефа
+  float diff = max(dot(normalize(vN), lightDir), 0.0);
+  c *= 0.42 + 0.66 * diff;
+  gl_FragColor = vec4(c, opacity);
+  #include <fog_fragment>
+}`;
+
+function makeIsoLabel(text) {
+  const c = document.createElement('canvas');
+  c.width = 128; c.height = 48;
+  const x = c.getContext('2d');
+  x.font = 'bold 30px system-ui, -apple-system, "Segoe UI", sans-serif';
+  x.textAlign = 'center';
+  x.textBaseline = 'middle';
+  x.lineWidth = 6;
+  x.strokeStyle = 'rgba(0,0,0,0.75)';
+  x.strokeText(text, 64, 25);
+  x.fillStyle = '#ffffff';
+  x.fillText(text, 64, 25);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
+  s.scale.set(1.5, 0.56, 1);
+  s.renderOrder = 4;
+  return s;
+}
 
 export class GameScene {
   constructor(container) {
@@ -142,7 +227,7 @@ export class GameScene {
     c.addEventListener('change', () => {
       c.target.x = clamp(c.target.x, -HALF - 4, HALF + 4);
       c.target.z = clamp(c.target.z, -HALF - 4, HALF + 4);
-      c.target.y = 0;
+      c.target.y = RELIEF * 0.4;
     });
 
     this.fieldGroup = new THREE.Group();
@@ -165,8 +250,6 @@ export class GameScene {
 
     this.hitMat = new THREE.MeshBasicMaterial({ visible: false });
     this.lightGeo = new THREE.SphereGeometry(0.2, 12, 8);
-    this.pipeGeo = new THREE.CylinderGeometry(1, 1, 1, 8);
-    this.pipeGeo.userData.shared = true;
     this.pipeMat = {
       oil: new THREE.MeshLambertMaterial({ color: 0xd9822b }),
       water: new THREE.MeshLambertMaterial({ color: 0x3987e5 }),
@@ -175,8 +258,9 @@ export class GameScene {
     };
     this.drainMat = {};
     for (const t of ['vert', 'horiz']) {
-      this.drainMat[t] = new THREE.MeshBasicMaterial({ color: WELL_COLOR[t], transparent: true, opacity: 0.1, depthWrite: false });
-      this.drainMat[t + 'Sel'] = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.18, depthWrite: false });
+      const dm = { transparent: true, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 };
+      this.drainMat[t] = new THREE.MeshBasicMaterial({ ...dm, color: WELL_COLOR[t], opacity: 0.16 });
+      this.drainMat[t + 'Sel'] = new THREE.MeshBasicMaterial({ ...dm, color: 0xffffff, opacity: 0.25 });
     }
     this.trajMat = {
       vert: new THREE.MeshLambertMaterial({ color: WELL_COLOR.vert }),
@@ -186,7 +270,8 @@ export class GameScene {
     this.dashMat = new THREE.LineDashedMaterial({ color: 0xffb070, dashSize: 0.45, gapSize: 0.3 });
     this.toeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
 
-    this.selRing = new THREE.Mesh(new THREE.RingGeometry(1.35, 1.6, 40), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false }));
+    this.selRing = new THREE.Mesh(new THREE.RingGeometry(1.35, 1.6, 40), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false, depthTest: false }));
+    this.selRing.renderOrder = 6;
     this.selRing.rotation.x = -Math.PI / 2;
     this.selRing.position.y = 0.05;
     this.selRing.visible = false;
@@ -198,7 +283,8 @@ export class GameScene {
     this.fxGroup.add(this.rubber);
 
     this.ghost = null;
-    this.ghostRing = new THREE.Mesh(new THREE.RingGeometry(1.2, 1.5, 32), new THREE.MeshBasicMaterial({ color: 0x0ca30c, transparent: true, opacity: 0.8, depthWrite: false }));
+    this.ghostRing = new THREE.Mesh(new THREE.RingGeometry(1.2, 1.5, 32), new THREE.MeshBasicMaterial({ color: 0x0ca30c, transparent: true, opacity: 0.8, depthWrite: false, depthTest: false }));
+    this.ghostRing.renderOrder = 6;
     this.ghostRing.rotation.x = -Math.PI / 2;
     this.ghostRing.position.y = 0.05;
     this.ghostRing.visible = false;
@@ -231,7 +317,7 @@ export class GameScene {
     // В портретной ориентации отодвигаем камеру, чтобы участок 4×4 км влез по ширине
     const k = this.camera.aspect < 1 ? 1.25 / this.camera.aspect : 1;
     this.camera.position.set(0, 36 * k, 30 * k);
-    this.controls.target.set(0, 0, 0);
+    this.controls.target.set(0, RELIEF * 0.4, 0);
     this.controls.update();
   }
 
@@ -247,8 +333,10 @@ export class GameScene {
       c.maxPolarAngle = 1.15;
     }
     if (this.ground) {
-      this.ground.material.opacity = this.view3d ? 0.3 : 1;
+      this.ground.material.uniforms.opacity.value = this.view3d ? 0.3 : 1;
       this.ground.material.depthWrite = !this.view3d;
+      this.skirt.material.opacity = this.view3d ? 0.25 : 1;
+      this.skirt.material.depthWrite = !this.view3d;
       this.outer.material.opacity = this.view3d ? 0.25 : 1;
       this.outer.material.depthWrite = !this.view3d;
     }
@@ -279,26 +367,71 @@ export class GameScene {
     }
     for (const id of [...this.items.keys()]) this.removeItem(id);
 
+    this.dataTex?.dispose();
     this.outer = new THREE.Mesh(new THREE.PlaneGeometry(260, 260), new THREE.MeshLambertMaterial({ color: 0x0c201c, transparent: true }));
     this.outer.rotation.x = -Math.PI / 2;
-    this.outer.position.y = -0.03;
+    this.outer.position.y = -0.05;
     this.fieldGroup.add(this.outer);
 
-    this.texCanvas = document.createElement('canvas');
-    this.texCanvas.width = this.texCanvas.height = 512;
-    this.groundTex = new THREE.CanvasTexture(this.texCanvas);
-    this.groundTex.colorSpace = THREE.SRGBColorSpace;
-    this.groundTex.anisotropy = 4;
-    this.ground = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshLambertMaterial({ map: this.groundTex, transparent: true }));
-    this.ground.rotation.x = -Math.PI / 2;
-    this.fieldGroup.add(this.ground);
-    this.drawLayer(this.layer);
+    this.buildRelief(field);
+    this.buildDataTexture(field);
 
-    const border = new THREE.LineLoop(
-      new THREE.BufferGeometry().setFromPoints([[-HALF, -HALF], [HALF, -HALF], [HALF, HALF], [-HALF, HALF]].map(([x, z]) => new THREE.Vector3(x, 0.04, z))),
+    // Поверхность участка: рельеф кровли, раскраска шейдером
+    const M = MESH_N + 1, gpos = new Float32Array(M * M * 3), guv = new Float32Array(M * M * 2), gidx = [];
+    for (let j = 0; j < M; j++) {
+      for (let i = 0; i < M; i++) {
+        const id = j * M + i, x = -HALF + (i / MESH_N) * 2 * HALF, z = -HALF + (j / MESH_N) * 2 * HALF;
+        gpos.set([x, this.hgt[id], z], id * 3);
+        guv.set([i / MESH_N, j / MESH_N], id * 2);
+        if (i < MESH_N && j < MESH_N) gidx.push(id, id + M, id + 1, id + 1, id + M, id + M + 1);
+      }
+    }
+    const gg = new THREE.BufferGeometry();
+    gg.setAttribute('position', new THREE.BufferAttribute(gpos, 3));
+    gg.setAttribute('uv', new THREE.BufferAttribute(guv, 2));
+    gg.setIndex(gidx);
+    gg.computeVertexNormals();
+    const L = new THREE.Vector3(-20, 40, 15).normalize();
+    const mat = new THREE.ShaderMaterial({
+      vertexShader: MAP_VERT, fragmentShader: MAP_FRAG, fog: true, transparent: true,
+      uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
+        data: { value: null }, mask: { value: new THREE.Vector4() },
+        levels: { value: new Array(MAX_LEV).fill(0) }, nLev: { value: 0 },
+        cols: { value: Array.from({ length: MAX_LEV + 1 }, () => new THREE.Vector3()) },
+        oilOnly: { value: 0 }, oilT: { value: 0.5 }, tundra: { value: new THREE.Vector3(0.2, 0.27, 0.23) },
+        opacity: { value: 1 }, lightDir: { value: L },
+      }]),
+    });
+    mat.uniforms.data.value = this.dataTex;
+    this.ground = new THREE.Mesh(gg, mat);
+    this.fieldGroup.add(this.ground);
+
+    // Борта участка: от края рельефа вниз до основания
+    const sk = [];
+    const edge = [];
+    for (let i = 0; i <= MESH_N; i++) edge.push([i, 0]);
+    for (let j = 1; j <= MESH_N; j++) edge.push([MESH_N, j]);
+    for (let i = MESH_N - 1; i >= 0; i--) edge.push([i, MESH_N]);
+    for (let j = MESH_N - 1; j >= 0; j--) edge.push([0, j]);
+    const ep = edge.map(([i, j]) => new THREE.Vector3(-HALF + (i / MESH_N) * 2 * HALF, this.hgt[j * M + i], -HALF + (j / MESH_N) * 2 * HALF));
+    for (let n = 0; n < ep.length - 1; n++) {
+      const a = ep[n], b = ep[n + 1];
+      sk.push(a.x, a.y, a.z, a.x, -0.05, a.z, b.x, b.y, b.z, b.x, b.y, b.z, a.x, -0.05, a.z, b.x, -0.05, b.z);
+    }
+    const sg = new THREE.BufferGeometry();
+    sg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(sk), 3));
+    sg.computeVertexNormals();
+    this.skirt = new THREE.Mesh(sg, new THREE.MeshLambertMaterial({ color: 0x2a3a33, side: THREE.DoubleSide, transparent: true }));
+    this.fieldGroup.add(this.skirt);
+
+    const border = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints(ep.map(p => new THREE.Vector3(p.x, p.y + 0.04, p.z))),
       new THREE.LineBasicMaterial({ color: 0xe34948 }),
     );
     this.fieldGroup.add(border);
+    this.isoGroup = new THREE.Group();
+    this.fieldGroup.add(this.isoGroup);
+    this.drawLayer(this.layer);
 
     // Пласт в 3D: кровля с вертикальным преувеличением
     const N = field.N;
@@ -347,57 +480,122 @@ export class GameScene {
     if (this.field) this.drawLayer(layer);
   }
 
-  drawLayer(layer) {
-    const f = this.field, N = f.N, S = 512;
-    const ctx = this.texCanvas.getContext('2d');
-    const img = ctx.createImageData(S, S), d = img.data;
-    const sample = (arr, u, v) => {
-      const x = clamp(u - 0.5, 0, N - 1), y = clamp(v - 0.5, 0, N - 1);
-      const x0 = Math.floor(x), y0 = Math.floor(y), x1 = Math.min(N - 1, x0 + 1), y1 = Math.min(N - 1, y0 + 1);
-      const fx = x - x0, fy = y - y0;
-      return (arr[y0 * N + x0] * (1 - fx) + arr[y0 * N + x1] * fx) * (1 - fy) + (arr[y1 * N + x0] * (1 - fx) + arr[y1 * N + x1] * fx) * fy;
-    };
-    const T = new Float32Array(S * S), H = new Float32Array(S * S), K = new Float32Array(S * S);
-    for (let py = 0; py < S; py++) {
-      for (let px = 0; px < S; px++) {
-        const u = (px + 0.5) / S * N, v = (py + 0.5) / S * N, p = py * S + px;
-        T[p] = sample(f.top, u, v);
-        H[p] = sample(f.h, u, v);
-        K[p] = sample(f.k, u, v);
+  // Высоты рельефа: свод (малая глубина кровли) — выше, крылья — ниже
+  buildRelief(f) {
+    const M = MESH_N + 1, hs = RELIEF / Math.max(10, f.topMax - f.topMin);
+    this.hgt = new Float32Array(M * M);
+    for (let j = 0; j < M; j++) {
+      for (let i = 0; i < M; i++) {
+        const x = (i / MESH_N) * 2 * HALF, z = (j / MESH_N) * 2 * HALF;
+        this.hgt[j * M + i] = Math.max(0, (f.topMax - sampleCR(f.top, f.N, x - 0.5, z - 0.5)) * hs);
       }
     }
-    const range = f.topMax - f.topMin;
-    const step = range > 60 ? 10 : range > 25 ? 5 : 2;
-    const tundra = new THREE.Color('#2a3a2e');
-    const lkMin = Math.log(f.kMin || 1), lkMax = Math.log(f.kMax || 2);
-    const cellPx = S / N;
-    const srgb = { r: 0, g: 0, b: 0 };
-    for (let py = 0; py < S; py++) {
-      for (let px = 0; px < S; px++) {
-        const p = py * S + px;
-        let cl;
-        const oilHere = H[p] > 0.25;
-        if (layer === 'top') cl = rampColor('top', (T[p] - f.topMin) / range);
-        else if (!oilHere) cl = tundra.clone();
-        else if (layer === 'h') cl = rampColor('h', H[p] / f.hMax);
-        else cl = rampColor('k', (Math.log(K[p]) - lkMin) / Math.max(0.1, lkMax - lkMin));
-        // изолинии кровли
-        const iso = q => Math.floor(q / step);
-        const r = px < S - 1 ? p + 1 : p, b = py < S - 1 ? p + S : p;
-        if (iso(T[p]) !== iso(T[r]) || iso(T[p]) !== iso(T[b])) cl.multiplyScalar(0.72);
-        // контур нефтеносности (ВНК)
-        const edge = (H[r] > 0.25) !== oilHere || (H[b] > 0.25) !== oilHere;
-        if (edge) cl.setRGB(1, 0.93, 0.7);
-        // сетка 500 м
-        if (px % (cellPx * 5) < 1 || py % (cellPx * 5) < 1) cl.lerp(new THREE.Color(1, 1, 1), 0.1);
-        const o = p * 4;
-        cl.getRGB(srgb, THREE.SRGBColorSpace);
-        d[o] = srgb.r * 255; d[o + 1] = srgb.g * 255; d[o + 2] = srgb.b * 255; d[o + 3] = 255;
-      }
-    }
-    ctx.putImageData(img, 0, 0);
-    this.groundTex.needsUpdate = true;
   }
+  surfY(x, z) {
+    if (!this.hgt || Math.abs(x) > HALF || Math.abs(z) > HALF) return 0;
+    const M = MESH_N + 1, u = (x + HALF) / (2 * HALF) * MESH_N, v = (z + HALF) / (2 * HALF) * MESH_N;
+    const i = Math.min(MESH_N - 1, Math.floor(u)), j = Math.min(MESH_N - 1, Math.floor(v)), fu = u - i, fv = v - j;
+    const H = this.hgt, a = H[j * M + i], b = H[j * M + i + 1], c = H[(j + 1) * M + i], d = H[(j + 1) * M + i + 1];
+    return (a * (1 - fu) + b * fu) * (1 - fv) + (c * (1 - fu) + d * fu) * fv;
+  }
+
+  // Свойства в текстуре (полуфлоат, нормированные 0…1): R — глубина, G — толщина, B — lg проницаемости
+  buildDataTexture(f) {
+    const D = DATA_N, range = Math.max(1e-6, f.topMax - f.topMin);
+    this.lk = [Math.log10(Math.max(1, f.kMin || 1)), Math.log10(Math.max(2, f.kMax || 2))];
+    const lkR = Math.max(0.05, this.lk[1] - this.lk[0]);
+    const lk = new Float32Array(f.N * f.N);
+    for (let n = 0; n < lk.length; n++) lk[n] = Math.log10(Math.max(1, f.k[n] || 1));
+    this.dat = { top: new Float32Array(D * D), h: new Float32Array(D * D), k: new Float32Array(D * D) };
+    const buf = new Uint16Array(D * D * 4), half = THREE.DataUtils.toHalfFloat;
+    for (let j = 0; j < D; j++) {
+      for (let i = 0; i < D; i++) {
+        const p = j * D + i, u = (i + 0.5) / D * f.N - 0.5, v = (j + 0.5) / D * f.N - 0.5;
+        const t = (sampleCR(f.top, f.N, u, v) - f.topMin) / range;
+        const h = Math.max(0, sampleCR(f.h, f.N, u, v)) / Math.max(0.1, f.hMax);
+        const k = (sampleCR(lk, f.N, u, v) - this.lk[0]) / lkR;
+        this.dat.top[p] = t; this.dat.h[p] = h; this.dat.k[p] = k;
+        buf[p * 4] = half(t); buf[p * 4 + 1] = half(h); buf[p * 4 + 2] = half(k); buf[p * 4 + 3] = half(1);
+      }
+    }
+    const tex = new THREE.DataTexture(buf, D, D, THREE.RGBAFormat, THREE.HalfFloatType);
+    tex.magFilter = tex.minFilter = THREE.LinearFilter;
+    tex.needsUpdate = true;
+    this.dataTex = tex;
+  }
+
+  // Шкала и изолинии выбранного свойства; описание шкалы — в this.legend для панели легенды
+  drawLayer(layer) {
+    const f = this.field, u = this.ground.material.uniforms;
+    let lo, hi, vals, norm, fmt;
+    if (layer === 'top') {
+      lo = f.topMin; hi = f.topMax;
+      const s = niceStep(hi - lo, 8);
+      vals = []; for (let v = Math.ceil(lo / s + 1e-6) * s; v < hi - 1e-6; v += s) vals.push(v);
+      norm = v => (v - lo) / Math.max(1e-6, hi - lo);
+      fmt = v => String(Math.round(v));
+    } else if (layer === 'h') {
+      lo = 0; hi = f.hMax;
+      const s = niceStep(hi, 7);
+      vals = []; for (let v = s; v < hi - 1e-6; v += s) vals.push(v);
+      norm = v => v / Math.max(0.1, hi);
+      fmt = v => (s < 1 ? v.toFixed(1) : String(Math.round(v * 10) / 10)).replace('.', ',');
+    } else {
+      lo = 10 ** this.lk[0]; hi = 10 ** this.lk[1];
+      if (hi / lo < 8) {
+        // узкий диапазон — равный шаг в мД
+        const s = niceStep(hi - lo, 7);
+        vals = []; for (let v = Math.ceil(lo / s + 1e-6) * s; v < hi - 1e-6; v += s) vals.push(v);
+      } else {
+        const cand = [];
+        for (let e = -1; e <= 5; e++) for (const m of [1, 2, 5]) cand.push(m * 10 ** e);
+        vals = cand.filter(v => v > lo * 1.05 && v < hi / 1.05);
+        if (vals.length > 10) vals = vals.filter(v => String(v)[0] !== '2');
+      }
+      norm = v => (Math.log10(v) - this.lk[0]) / Math.max(0.05, this.lk[1] - this.lk[0]);
+      fmt = v => String(Math.round(v));
+    }
+    vals = vals.filter(v => norm(v) > 0.04 && norm(v) < 0.96).slice(0, MAX_LEV);
+    const nB = vals.length + 1;
+    const cols = Array.from({ length: nB }, (_, b) => rampSRGB(layer, nB > 1 ? b / (nB - 1) : 0.5));
+    u.mask.value.set(layer === 'top' ? 1 : 0, layer === 'h' ? 1 : 0, layer === 'k' ? 1 : 0, 0);
+    vals.forEach((v, i) => { u.levels.value[i] = norm(v); });
+    u.nLev.value = vals.length;
+    cols.forEach((c, i) => u.cols.value[i].copy(c));
+    u.oilOnly.value = layer === 'top' ? 0 : 1;
+    u.oilT.value = 0.25 / Math.max(0.1, f.hMax);
+    this.legend = { lo: fmt(lo), hi: fmt(hi), levels: vals.map(fmt), colors: cols.map(toHex) };
+    this.isoLabels(layer, vals.map(norm), vals.map(fmt), u.oilT.value);
+  }
+
+  // Подписи изолиний: точки пересечения уровней на грубой сетке, разнесённые друг от друга
+  isoLabels(layer, levels, texts, oilT) {
+    for (const s of [...this.isoGroup.children]) { this.isoGroup.remove(s); s.material.map.dispose(); s.material.dispose(); }
+    const D = DATA_N, A = this.dat[layer], Hd = this.dat.h, step = 6, picked = [];
+    const toW = c => (c + 0.5) / D * 2 * HALF - HALF;
+    for (let j = step; j < D - step; j += step) {
+      for (let i = step; i < D - step; i += step) {
+        const p = j * D + i, a = A[p];
+        for (const [q, di, dj] of [[p + step, step, 0], [p + step * D, 0, step]]) {
+          const b = A[q];
+          levels.forEach((L, li) => {
+            if ((a - L) * (b - L) >= 0) return;
+            const t = (L - a) / (b - a), x = toW(i + di * t), z = toW(j + dj * t);
+            if (layer !== 'top' && (Hd[p] < oilT || Hd[q] < oilT)) return;
+            if (picked.length >= 30) return;
+            if (picked.some(o => (o.x - x) ** 2 + (o.z - z) ** 2 < (o.li === li ? 13 * 13 : 5.5 * 5.5))) return;
+            picked.push({ x, z, li });
+          });
+        }
+      }
+    }
+    for (const o of picked) {
+      const s = makeIsoLabel(texts[o.li]);
+      s.position.set(o.x, this.surfY(o.x, o.z) + 0.35, o.z);
+      this.isoGroup.add(s);
+    }
+  }
+
 
   // ---------- Объекты ----------
   createItem(o) {
@@ -437,7 +635,7 @@ export class GameScene {
       let it = this.items.get(o.id);
       if (it && (it.type !== o.type || it.labelText !== o.label)) { this.removeItem(o.id); it = null; }
       if (!it) it = this.createItem(o);
-      it.group.position.set(o.x, 0, o.z);
+      it.group.position.set(o.x, this.surfY(o.x, o.z), o.z);
       let st = 'ok';
       if (isWell(o.type)) {
         const w = an.wellById.get(o.id);
@@ -467,17 +665,15 @@ export class GameScene {
     for (const o of state.objects) {
       if (isProducer(o.type)) {
         const len = o.type === 'horiz' ? o.len / CELL_M : 0;
-        const drain = new THREE.Mesh(stadiumGeometry(len, DRAIN_R_M / CELL_M), this.drainMat[o.type + (o.id === selObj ? 'Sel' : '')]);
-        drain.position.set(o.x, 0.03 + (o.id % 7) * 0.001, o.z);
-        drain.rotation.y = o.type === 'horiz' ? -o.angle : 0;
+        const drain = new THREE.Mesh(this.drapedStadium(o.x, o.z, o.type === 'horiz' ? o.angle : 0, len, DRAIN_R_M / CELL_M, 0.05 + (o.id % 7) * 0.002), this.drainMat[o.type + (o.id === selObj ? 'Sel' : '')]);
         this.dynGroup.add(drain);
       }
       if (o.type === 'horiz') {
         const t = toePoint(o);
-        const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(o.x, 0.08, o.z), new THREE.Vector3(t.x, 0.08, t.z)]), this.dashMat);
+        const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(this.drapedLine(o, t, 0.1)), this.dashMat);
         line.computeLineDistances();
         const toe = new THREE.Mesh(new THREE.SphereGeometry(o.id === selObj ? 0.55 : 0.42, 14, 10), this.toeMat);
-        toe.position.set(t.x, 0.45, t.z);
+        toe.position.set(t.x, this.surfY(t.x, t.z) + 0.45, t.z);
         const toeHit = new THREE.Mesh(new THREE.SphereGeometry(1.1, 10, 8), this.hitMat);
         toeHit.position.copy(toe.position);
         toeHit.userData = { kind: 'toe', id: o.id };
@@ -487,25 +683,21 @@ export class GameScene {
       if (isWell(o.type) && this.view3d) this.addTrajectory(o);
     }
 
-    // Трубопроводы
-    const up = new THREE.Vector3(0, 1, 0);
+    // Трубопроводы — по рельефу
     for (const p of state.pipes) {
       const a = an.byId.get(p.a), b = an.byId.get(p.b);
       if (!a || !b) continue;
-      const A = new THREE.Vector3(a.x, 0.14, a.z), B = new THREE.Vector3(b.x, 0.14, b.z);
-      const dir = B.clone().sub(A), len = dir.length();
+      const len = Math.hypot(b.x - a.x, b.z - a.z);
       if (len < 1e-3) continue;
       const active = an.upnOkComp.has(an.comp.get(a.id));
       const waterLine = a.type === 'inj' || b.type === 'inj';
       const isSel = selected?.kind === 'pipe' && selected.id === p.id;
-      const m = new THREE.Mesh(this.pipeGeo, isSel ? this.pipeMat.sel : !active ? this.pipeMat.idle : waterLine ? this.pipeMat.water : this.pipeMat.oil);
-      m.position.copy(A).add(B).multiplyScalar(0.5);
-      m.quaternion.setFromUnitVectors(up, dir.clone().normalize());
-      m.scale.set(0.1, len, 0.1);
-      const hit = new THREE.Mesh(this.pipeGeo, this.hitMat);
-      hit.position.copy(m.position);
-      hit.quaternion.copy(m.quaternion);
-      hit.scale.set(0.55, Math.max(0.1, len - 2.2), 0.55);
+      const pts = this.drapedLine(a, b, 0.14);
+      const m = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), pts.length * 2, 0.1, 6), isSel ? this.pipeMat.sel : !active ? this.pipeMat.idle : waterLine ? this.pipeMat.water : this.pipeMat.oil);
+      // зона касания — без концов, чтобы не перехватывать касания объектов
+      const cut = Math.min(0.45, 1.1 / len);
+      const hp = this.drapedLine({ x: a.x + (b.x - a.x) * cut, z: a.z + (b.z - a.z) * cut }, { x: b.x - (b.x - a.x) * cut, z: b.z - (b.z - a.z) * cut }, 0.14);
+      const hit = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(hp), hp.length, 0.55, 6), this.hitMat);
       hit.userData = { kind: 'pipe', id: p.id };
       this.dynGroup.add(m, hit);
       this.pickTargets.push(hit);
@@ -515,26 +707,66 @@ export class GameScene {
     if (selObj && this.items.has(selObj)) {
       const o = an.byId.get(selObj);
       this.selRing.visible = true;
-      this.selRing.position.set(o.x, 0.05, o.z);
+      this.selRing.position.set(o.x, this.surfY(o.x, o.z) + 0.08, o.z);
       this.selRing.scale.setScalar(HIT_R[o.type] / 1.2);
     } else {
       this.selRing.visible = false;
     }
   }
 
+  // Линия по поверхности рельефа от a до b (шаг ~0,5 ед.), приподнятая на lift
+  drapedLine(a, b, lift) {
+    const n = Math.max(2, Math.ceil(Math.hypot(b.x - a.x, b.z - a.z) / 0.5));
+    const pts = [];
+    for (let s = 0; s <= n; s++) {
+      const x = a.x + (b.x - a.x) * s / n, z = a.z + (b.z - a.z) * s / n;
+      pts.push(new THREE.Vector3(x, this.surfY(x, z) + lift, z));
+    }
+    return pts;
+  }
+
+  // Зона дренирования («стадион» вокруг ствола), уложенная на рельеф кольцами от оси к краю
+  drapedStadium(x0, z0, ang, len, r, lift) {
+    const B = [];
+    const side = (y, from, to) => { const n = Math.max(1, Math.ceil(Math.abs(to - from) / 0.5)); for (let s = 0; s < n; s++) B.push([from + (to - from) * s / n, y]); };
+    const arc = (cx, a0) => { for (let s = 0; s < 24; s++) { const a = a0 + Math.PI * s / 24; B.push([cx + r * Math.cos(a), r * Math.sin(a)]); } };
+    side(-r, 0, len); arc(len, -Math.PI / 2); side(r, len, 0); arc(0, Math.PI / 2);
+    const ca = Math.cos(ang), sa = Math.sin(ang), R = 5, K = B.length;
+    const pos = new Float32Array(K * (R + 1) * 3), idx = [];
+    B.forEach(([bx, by], k) => {
+      const cx = clamp(bx, 0, len);
+      for (let q = 0; q <= R; q++) {
+        const sx = cx + (bx - cx) * q / R, sy = by * q / R;
+        const x = x0 + sx * ca - sy * sa, z = z0 + sx * sa + sy * ca;
+        pos.set([x, this.surfY(x, z) + lift, z], (k * (R + 1) + q) * 3);
+      }
+    });
+    for (let k = 0; k < K; k++) {
+      const k2 = (k + 1) % K;
+      for (let q = 0; q < R; q++) {
+        const a = k * (R + 1) + q, b = k2 * (R + 1) + q;
+        idx.push(a, a + 1, b, b, a + 1, b + 1);
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setIndex(idx);
+    return g;
+  }
+
   addTrajectory(o) {
-    const yr = this.reservoirY(o.x, o.z);
+    const yr = this.reservoirY(o.x, o.z), y0 = this.surfY(o.x, o.z);
     let pts;
     if (o.type === 'horiz') {
       const t = toePoint(o), dx = Math.cos(o.angle), dz = Math.sin(o.angle);
-      pts = [new THREE.Vector3(o.x, 0, o.z), new THREE.Vector3(o.x, yr * 0.55, o.z), new THREE.Vector3(o.x + dx * 1.2, yr + 0.15, o.z + dz * 1.2)];
+      pts = [new THREE.Vector3(o.x, y0, o.z), new THREE.Vector3(o.x, yr * 0.55, o.z), new THREE.Vector3(o.x + dx * 1.2, yr + 0.15, o.z + dz * 1.2)];
       const steps = Math.max(2, Math.round(o.len / 200));
       for (let s = 1; s <= steps; s++) {
         const f = s / steps, x = o.x + dx * 1.2 + (t.x - o.x - dx * 1.2) * f, z = o.z + dz * 1.2 + (t.z - o.z - dz * 1.2) * f;
         pts.push(new THREE.Vector3(x, this.reservoirY(x, z) - 0.15, z));
       }
     } else {
-      pts = [new THREE.Vector3(o.x, 0, o.z), new THREE.Vector3(o.x, yr * 0.5, o.z), new THREE.Vector3(o.x, yr - 0.6, o.z)];
+      pts = [new THREE.Vector3(o.x, y0, o.z), new THREE.Vector3(o.x, yr * 0.5, o.z), new THREE.Vector3(o.x, yr - 0.6, o.z)];
     }
     const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
     const m = new THREE.Mesh(new THREE.TubeGeometry(curve, 48, 0.13, 6), this.trajMat[o.type]);
@@ -560,6 +792,10 @@ export class GameScene {
   }
   groundPoint(cx, cy) {
     this.setRay(cx, cy);
+    if (this.ground) {
+      const h = this.raycaster.intersectObject(this.ground, false)[0];
+      if (h) return { x: h.point.x, z: h.point.z };
+    }
     const p = new THREE.Vector3();
     return this.raycaster.ray.intersectPlane(this.groundPlane, p) ? { x: p.x, z: p.z } : null;
   }
@@ -576,9 +812,10 @@ export class GameScene {
       this.fxGroup.add(g);
     }
     this.ghost.visible = true;
-    this.ghost.position.set(x, 0, z);
+    const y = this.surfY(x, z);
+    this.ghost.position.set(x, y, z);
     this.ghostRing.visible = true;
-    this.ghostRing.position.set(x, 0.05, z);
+    this.ghostRing.position.set(x, y + 0.08, z);
     this.ghostRing.material.color.setHex(ok ? STATUS.ok : STATUS.bad);
     this.ghostRing.scale.setScalar(HIT_R[type] / 1.2);
   }
@@ -589,8 +826,8 @@ export class GameScene {
 
   setRubber(a, b) {
     const pos = this.rubber.geometry.attributes.position;
-    pos.setXYZ(0, a.x, 0.3, a.z);
-    pos.setXYZ(1, b.x, 0.3, b.z);
+    pos.setXYZ(0, a.x, this.surfY(a.x, a.z) + 0.3, a.z);
+    pos.setXYZ(1, b.x, this.surfY(b.x, b.z) + 0.3, b.z);
     pos.needsUpdate = true;
     this.rubber.geometry.computeBoundingSphere();
     this.rubber.visible = true;
