@@ -12,7 +12,8 @@ self.onmessage = e => {
   self.postMessage({ state });
 };
 
-export function optimize(sc, fresh, progress) {
+// types — какие скважины разрешены (по умолчанию все); нужно для проверки баланса
+export function optimize(sc, fresh, progress, types = ['vert', 'inj', 'horiz']) {
   const field = buildField(sc), N = field.N, half = N / 2;
   const cellOf = (x, z) => {
     const i = Math.floor(x + half), j = Math.floor(z + half);
@@ -63,6 +64,7 @@ export function optimize(sc, fresh, progress) {
     for (let a = 0; a < 8; a++) for (const len of [600, HORIZ.def + 200, 1400]) cands.push({ type: 'horiz', x: X, z: Z, len, angle: a * Math.PI / 4 });
   }
 
+  for (let i = cands.length - 1; i >= 0; i--) if (!types.includes(cands[i].type)) cands.splice(i, 1);
   const free = c => st.objects.every(o => Math.hypot(o.x - c.x, o.z - c.z) >= 2);
   // Ленивый перебор: раз в 6 шагов пересчитываем всех кандидатов, в остальные — только 60 лучших по прошлой оценке
   let best = npvOf(st), prods = 0;

@@ -9,11 +9,12 @@ function niceStep(range, count) {
 
 const nf = v => Number(v).toLocaleString('ru-RU', { maximumFractionDigits: Math.abs(v) < 10 && v !== 0 ? 1 : 0 });
 
-// opt: { data:[{year, ...}], key, kind:'bar'|'line', color, unit, label }
+// opt: { data:[{year, ...}], key, kind:'bar'|'line', color, unit, label, ref }
+// ref — значения прошлого расчёта по тем же годам, рисуются пунктиром для сравнения
 export function chart(el, opt) {
-  const { data, key, kind = 'bar', color, unit = '', label = '', width = 560 } = opt;
+  const { data, key, kind = 'bar', color, unit = '', label = '', width = 560, ref = null } = opt;
   const W = width, H = 210, m = { l: 56, r: 14, t: 14, b: 28 };
-  const vals = data.map(d => d[key]).filter(v => v != null);
+  const vals = [...data.map(d => d[key]), ...(ref || [])].filter(v => v != null);
   let lo = Math.min(0, ...vals), hi = Math.max(0, ...vals);
   if (hi - lo < 1e-9) hi = lo + 1;
   const step = niceStep(hi - lo, 4);
@@ -49,6 +50,10 @@ export function chart(el, opt) {
     const pts = data.map((d, i) => (d[key] == null ? null : `${X(i).toFixed(1)},${Y(d[key]).toFixed(1)}`)).filter(Boolean).join(' ');
     s += `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
   }
+  if (ref) {
+    const pts = ref.map((v, i) => (v == null ? null : `${X(i).toFixed(1)},${Y(v).toFixed(1)}`)).filter(Boolean).join(' ');
+    s += `<polyline points="${pts}" class="ch-ref" fill="none" stroke-width="2" stroke-dasharray="5 4" stroke-linejoin="round"/>`;
+  }
   s += `<line class="ch-cross" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" visibility="hidden"/>`;
   s += `<circle class="ch-dot" r="5" fill="${color}" visibility="hidden"/>`;
   s += `<rect class="ch-hit" x="${m.l}" y="${m.t}" width="${iw}" height="${ih}" fill="transparent"/>`;
@@ -72,7 +77,7 @@ export function chart(el, opt) {
       bars.forEach(b => b.classList.toggle('dim', +b.dataset.i !== i));
     }
     tip.hidden = false;
-    tip.innerHTML = `<b>${d.year}</b><span>${nf(d[key])} ${unit}</span>`;
+    tip.innerHTML = `<b>${d.year}</b><span>${nf(d[key])} ${unit}</span>${ref && ref[i] != null ? `<span class="muted">прошлый: ${nf(ref[i])}</span>` : ''}`;
     const px = cx / W * r.width, py = cy / H * r.height;
     tip.style.left = `${Math.min(r.width - 120, Math.max(0, px - 60))}px`;
     tip.style.top = `${Math.max(0, py - 52)}px`;

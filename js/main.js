@@ -8,6 +8,7 @@ import { GameScene } from './scene.js';
 import { chart } from './charts.js';
 import * as LB from './leaderboard.js';
 import { GLOSSARY, termByKey } from './glossary.js';
+import { sfx, sound } from './sound.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -69,9 +70,23 @@ const app = {
   result: null, resOpen: false, npConfirm: false,
   baseId: 'training',
   view: null, // просмотр чужого проекта или эталона
+  theme: store.get('fieldx_theme', 'system'), // настройки этого устройства, у других игроков не меняются
 };
+sound.on = store.get('fieldx_sound', false);
 
 const scene = new GameScene($('#viewport'));
+
+// ---------- Тема ----------
+const THEMES = { system: 'Как в системе', dark: 'Тёмная', light: 'Светлая' };
+const sysLight = matchMedia('(prefers-color-scheme: light)');
+function applyTheme() {
+  const t = app.theme === 'system' ? (sysLight.matches ? 'light' : 'dark') : app.theme;
+  document.documentElement.dataset.theme = t;
+  $('meta[name="theme-color"]').content = t === 'light' ? '#e9efed' : '#020a09';
+  scene.setTheme(t === 'light');
+}
+sysLight.addEventListener('change', () => { if (app.theme === 'system') applyTheme(); });
+applyTheme();
 const byId = id => app.state.objects.find(o => o.id === id);
 const budgetLeft = () => app.sc.budget - capexOf(app.state).total;
 
@@ -193,11 +208,11 @@ const snap = v => Math.round(v * 2) / 2;
 function placeObject(type, x, z) {
   x = snap(x); z = snap(z);
   const err = placeError(x, z);
-  if (err) return toast(err);
+  if (err) { sfx('error'); return toast(err); }
   const o = { id: 0, type, x, z };
   if (type === 'horiz') { o.len = HORIZ.def; o.angle = 0; }
   const cost = objectCost(o);
-  if (cost > budgetLeft() + 1e-6) return toast(`Не хватает бюджета: нужно ${nf(cost)} млн ₽, осталось ${nf(budgetLeft())}`);
+  if (cost > budgetLeft() + 1e-6) { sfx('error'); return toast(`Не хватает бюджета: нужно ${nf(cost)} млн ₽, осталось ${nf(budgetLeft())}`); }
   snapshot();
   o.id = app.state.nextId++;
   o.label = nextLabel(type);
@@ -209,7 +224,7 @@ function placeObject(type, x, z) {
   app.selected = { kind: 'obj', id: o.id };
   if (app.tool) disarm();
   changed();
-  buzz();
+  sfx('place');
   if (isWell(type) && !auto && app.autoPipe) toast('Рядом нет ДНС/УПН. Проведите трубопровод инструментом 🔗');
 }
 
@@ -247,7 +262,7 @@ function addPipe(aId, bId) {
   app.selected = { kind: 'pipe', id };
   if (app.tool) disarm();
   changed();
-  buzz();
+  sfx('pipe');
   toast(`Трубопровод ${a.label} → ${b.label}: ${nf(distM(a, b) / 1000, 1)} км, ${nf(c)} млн ₽`);
 }
 
@@ -266,6 +281,7 @@ function deleteSelected() {
   }
   app.selected = null;
   changed();
+  sfx('remove');
 }
 
 function select(sel) {
@@ -412,7 +428,7 @@ function renderPalette() {
     const name = TOOL_NAME[t];
     const cost = isPipe ? `${PIPE_COST_PER_KM}/км` : t === 'horiz' ? `${horizCost(HORIZ.def)}` : `${CATALOG[t].cost}`;
     return `<button class="tool ${app.tool === t ? 'armed' : ''}" data-tool="${t}" title="${esc(isPipe ? 'Соединить объекты трубопроводом' : CATALOG[t].name)}">
-      <span class="ti">${icon}</span><span class="tn">${esc(name)}</span><span class="tc">${cost} млн ₽</span></button>`;
+      <span class="ti">${icon}</span><span class="tn">${esc(name)}</span><span class="tc">${cost}<span class="tu"> млн ₽</span></span></button>`;
   }).join('');
 }
 
@@ -444,7 +460,16 @@ function paletteMove(e) {
   if (!g) return scene.hideGhost();
   const x = snap(g.x), z = snap(g.z);
   const probe = { type: p.tool, len: HORIZ.def };
-  scene.showGhost(p.tool, x, z, !placeError(x, z) && objectCost(probe) <= budgetLeft());
+  scene.showGhost(p.tool, x, z, !placeError(x, z) && objectCost(probe) <= budgetLeft(), ghostInfo(p.tool, x, z));
+}
+
+// Для добывающей скважины под пальцем — зона дренирования и её запасы (с учётом соседей)
+function ghostInfo(type, x, z) {
+  if (!isProducer(type)) return null;
+  const o = { id: -1, type, x, z, len: HORIZ.def, angle: 0, label: '' };
+  const w = analyze({ ...app.state, objects: [...app.state.objects, o] }, app.field, app.sc).wellById.get(-1);
+  const kt = w.Np * app.sc.pvt.rho / 1000;
+  return { len: type === 'horiz' ? o.len : 0, angle: 0, text: kt < 15 ? 'мимо нефти' : `≈${nf(kt)} тыс.т` };
 }
 
 function paletteUp(e) {
@@ -776,15 +801,19 @@ function runCalc() {
   root.innerHTML = `<div class="calc-overlay"><div class="calc-box">
     <div class="calc-label">Моделирование разработки</div>
     <div class="calc-year" id="cYear">${START_YEAR}</div>
+    <div class="calc-chart" id="cChart">${sim.rows.map(() => '<i></i>').join('')}</div>
     <div class="calc-bar"><i id="cBar"></i></div>
     <div class="calc-stats"><div><span>Добыто нефти</span><b id="cOil">0</b> тыс. т</div><div><span>ЧДД</span><b id="cNpv">${nf(-sim.capex)}</b> млн ₽</div></div>
   </div></div>`;
   scene.setFlow(true);
+  // график добычи растёт по годам вместе со счётчиком
+  const bars = [...$('#cChart').children], maxOil = Math.max(1, ...sim.rows.map(r => r.oilT));
   const t0 = performance.now(), dur = 2600;
   const step = () => {
     const p = clamp((performance.now() - t0) / dur, 0, 1);
     const k = Math.floor(p * YEARS);
     const rows = sim.rows.slice(0, k);
+    rows.forEach((r, i) => { bars[i].style.height = `${r.oilT / maxOil * 100}%`; });
     $('#cYear').textContent = START_YEAR + k;
     $('#cBar').style.width = `${p * 100}%`;
     $('#cOil').textContent = nf(rows.reduce((s, r) => s + r.oilT, 0) / 1000);
@@ -813,6 +842,7 @@ function showResults(sim, opts = {}) {
     },
     place: app.scores.filter(s => s.npv > sim.npv).length + 1,
     submitted: !!view, sending: false, stale: false, view,
+    prev: view ? null : store.get('fieldx_last_' + sc.id, null), // прошлый расчёт этого игрока — для сравнения
   };
   const tiles = [
     ['Добыча за 20 лет', `${nf(sim.cumOilT / 1000)}`, 'тыс. т'],
@@ -827,11 +857,17 @@ function showResults(sim, opts = {}) {
   const stopNote = lastProd && lastProd.year < START_YEAR + YEARS
     ? `<div class="muted small">Добыча завершена в ${lastProd.year} г.: скважины обводнились или промысел стал убыточным.</div>` : '';
   const cumData = [{ year: START_YEAR, cum: -sim.capex }, ...data];
+  const prev = app.result.prev, dNpv = prev ? Math.round(sim.npv) - prev.npv : 0;
+  const deltaHtml = prev ? `<div class="delta ${dNpv > 0 ? 'up' : dNpv < 0 ? 'down' : ''}">${dNpv > 0 ? '▲ +' : dNpv < 0 ? '▼ −' : '= '}${nf(Math.abs(dNpv))} к прошлому расчёту</div>` : '';
+  if (!view && !opts.keep) {
+    store.set('fieldx_last_' + sc.id, { npv: Math.round(sim.npv), oil: data.map(d => d.oil) });
+    sfx('result');
+  }
   $('#resBody').innerHTML = `
     <div class="res-head">
       <div class="muted">Итоги · ${esc(sc.name)}${view ? ` · <b>${esc(view)}</b>` : ''}</div>
       <div class="hero"><span class="hero-label">${term('ЧДД')}${view ? '' : ' — ваши очки'}</span>
-        <span class="hero-num ${sim.npv < 0 ? 'neg' : ''}">${nf(sim.npv)}</span><span class="hero-unit">млн ₽</span></div>
+        <span class="hero-num ${sim.npv < 0 ? 'neg' : ''}">${nf(sim.npv)}</span><span class="hero-unit">млн ₽</span>${deltaHtml}</div>
       <div id="resStatus"></div>
       <div id="resStale" class="stale" ${app.result.stale ? '' : 'hidden'}>✏️ Проект изменён — нажмите ▶ «Рассчитать» ещё раз</div>
     </div>
@@ -842,7 +878,7 @@ function showResults(sim, opts = {}) {
     </div>
     <div class="tiles">${tiles.map(([k, v, u]) => `<div class="tile"><div class="t-k">${k}</div><div class="t-v">${v}</div><div class="t-u">${u}</div></div>`).join('')}</div>
     <div class="charts">
-      <figure><figcaption>Добыча нефти, тыс. т/год</figcaption><div class="chart" id="chOil"></div></figure>
+      <figure><figcaption>Добыча нефти, тыс. т/год${prev ? ' <span class="ref-key">пунктир — прошлый расчёт</span>' : ''}</figcaption><div class="chart" id="chOil"></div></figure>
       <figure><figcaption>${term('Обводнённость')}, %</figcaption><div class="chart" id="chWc"></div></figure>
       <figure><figcaption>Накопленный дисконтированный денежный поток, млн ₽</figcaption><div class="chart" id="chCum"></div></figure>
     </div>
@@ -853,7 +889,7 @@ function showResults(sim, opts = {}) {
       ${sim.rows.map(r => `<tr><td>${r.year}</td><td>${nf(r.oilT / 1000, 1)}</td><td>${nf(r.liq / 1000, 1)}</td><td>${nf(r.wc * 100)}</td><td>${nf(r.rev + r.npzB)}</td><td>${nf(r.ndpi)}</td><td>${nf(r.opex)}</td><td>${nf(r.flare)}</td><td>${nf(r.tax)}</td><td>${nf(r.cf)}</td></tr>`).join('')}
     </table></div><div class="muted small">Денежные величины в млн ₽.</div></details>
     <div class="muted small center">В рейтинге остаётся лучший результат каждого игрока.</div>`;
-  chart($('#chOil'), { data, key: 'oil', kind: 'bar', color: '#d95926', unit: 'тыс. т', label: 'Добыча нефти по годам' });
+  chart($('#chOil'), { data, key: 'oil', kind: 'bar', color: '#d95926', unit: 'тыс. т', label: 'Добыча нефти по годам', ref: prev?.oil });
   chart($('#chWc'), { data, key: 'wc', kind: 'line', color: '#3987e5', unit: '%', label: 'Обводнённость по годам' });
   chart($('#chCum'), { data: cumData, key: 'cum', kind: 'line', color: '#049c8c', unit: 'млн ₽', label: 'Накопленный дисконтированный денежный поток' });
   $('#resBody').scrollTop = 0;
@@ -943,6 +979,8 @@ function newPlayer(force = false) {
   app.selected = null;
   app.player = '';
   store.set('fieldx_player', '');
+  // прошлые расчёты принадлежали прежнему игроку — сравнивать с ними новому незачем
+  try { Object.keys(localStorage).filter(k => k.startsWith('fieldx_last_')).forEach(k => localStorage.removeItem(k)); } catch { /* хранилище недоступно */ }
   app.fold.player = true;
   disarm();
   changed();
@@ -969,9 +1007,36 @@ function showMenu() {
       <button class="btn big" data-act="home">⌖ Показать весь участок</button>
       <button class="btn big" data-act="clear-lb">🗑 Очистить рейтинг <span class="muted">для организатора, нужен пароль</span></button>
     </div>
-    <label class="toggle"><input type="checkbox" id="chkAuto" ${app.autoPipe ? 'checked' : ''}> Автотрубы: новая скважина сама подключается к ближайшей ДНС/УПН (до 1,5 км)</label>`, 'menu');
+    <div class="menu-row"><span>🎨 Тема <span class="muted small">только на этом устройстве</span></span>
+      <div class="seg">${Object.entries(THEMES).map(([k, v]) => `<button class="${app.theme === k ? 'on' : ''}" data-theme-set="${k}">${v}</button>`).join('')}</div></div>
+    <label class="toggle"><input type="checkbox" id="chkSound" ${sound.on ? 'checked' : ''}> 🔊 Звуки и вибрация</label>
+    <label class="toggle"><input type="checkbox" id="chkAuto" ${app.autoPipe ? 'checked' : ''}> Автотрубы: новая скважина сама подключается к ближайшей ДНС/УПН (до 1,5 км)</label>
+    <div class="menu-list">${installBtn()}</div>`, 'menu');
   $('#chkAuto').addEventListener('change', e => { app.autoPipe = e.target.checked; store.set('fieldx_autopipe', app.autoPipe); });
+  $('#chkSound').addEventListener('change', e => { sound.on = e.target.checked; store.set('fieldx_sound', sound.on); sfx('place'); });
 }
+
+// ---------- Установка на главный экран ----------
+let installEvt = null;
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; });
+const standalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+function installBtn() {
+  if (standalone()) return '';
+  return '<button class="btn big" data-act="install">📲 Установить игру <span class="muted">значок на главном экране, открывается без адресной строки</span></button>';
+}
+async function install() {
+  closeModal();
+  if (installEvt) {
+    installEvt.prompt();
+    const r = await installEvt.userChoice;
+    installEvt = null;
+    if (r.outcome === 'accepted') toast('Игра установлена: ищите значок на главном экране');
+    return;
+  }
+  toast(isIOS ? 'В Safari нажмите «Поделиться» ⬆️ → «На экран „Домой“»' : 'В меню браузера ⋮ выберите «Установить приложение» или «Добавить на главный экран»', 7000);
+}
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
 // ---------- Настройки пласта и флюида ----------
 const parRange = (p, r) => [typeof p.min === 'function' ? p.min(r) : p.min, typeof p.max === 'function' ? p.max(r) : p.max];
@@ -1167,7 +1232,6 @@ function toast(msg, ms = 2600) {
   clearTimeout(toast.t);
   toast.t = setTimeout(() => el.classList.remove('show'), ms);
 }
-function buzz() { try { navigator.vibrate?.(12); } catch { /* нет вибро */ } }
 
 // ---------- Кнопки (делегирование) ----------
 document.addEventListener('click', e => {
@@ -1189,9 +1253,18 @@ document.addEventListener('click', e => {
     document.querySelectorAll('[data-layer]').forEach(b => b.classList.toggle('on', b === layer));
     return;
   }
+  const th = e.target.closest('[data-theme-set]');
+  if (th) {
+    app.theme = th.dataset.themeSet;
+    store.set('fieldx_theme', app.theme);
+    applyTheme();
+    document.querySelectorAll('[data-theme-set]').forEach(b => b.classList.toggle('on', b === th));
+    return;
+  }
   const a = e.target.closest('[data-act]');
   if (!a) return;
   switch (a.dataset.act) {
+    case 'install': install(); break;
     case 'close': select(null); break;
     case 'delete': deleteSelected(); break;
     case 'len-': editHoriz(h => { h.len = clamp(h.len - 100, HORIZ.min, HORIZ.max); }); break;

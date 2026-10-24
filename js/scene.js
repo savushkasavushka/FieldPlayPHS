@@ -8,6 +8,10 @@ const HALF = 20;
 const STATUS = { ok: 0x0ca30c, bad: 0xd03b3b, warn: 0xfab219, idle: 0x898781 };
 const WELL_COLOR = { vert: 0xe0a33a, horiz: 0xeb6834, inj: 0x3987e5 };
 const HIT_R = { vert: 1.2, horiz: 1.2, inj: 1.2, dns: 1.7, upn: 2.0, npz: 2.0, gtes: 1.7, export: 1.8 };
+// Фон сцены и земля вокруг участка в тёмной и светлой теме
+const BG = { dark: 0x020a09, light: 0xdde6e3 };
+const OUTER = { dark: 0x0c201c, light: 0xb4c6bf };
+const TUNDRA = { dark: [0.2, 0.27, 0.23], light: [0.56, 0.64, 0.58] }; // участок вне залежи
 const LIGHT_Y = { vert: 2.0, horiz: 2.0, inj: 2.0, dns: 1.5, upn: 2.8, npz: 3.3, gtes: 2.1, export: 3.0 };
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -210,8 +214,8 @@ export class GameScene {
     this.canvas.addEventListener('contextmenu', e => e.preventDefault());
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x020a09);
-    this.scene.fog = new THREE.Fog(0x020a09, 70, 160);
+    this.scene.background = new THREE.Color(BG.dark);
+    this.scene.fog = new THREE.Fog(BG.dark, 70, 160);
     this.camera = new THREE.PerspectiveCamera(42, 1, 0.3, 500);
     this.scene.add(new THREE.HemisphereLight(0xdfe9f3, 0x2a2a20, 1.4));
     const sun = new THREE.DirectionalLight(0xfff1dc, 1.8);
@@ -268,6 +272,13 @@ export class GameScene {
       inj: new THREE.MeshLambertMaterial({ color: WELL_COLOR.inj }),
     };
     this.dashMat = new THREE.LineDashedMaterial({ color: 0xffb070, dashSize: 0.45, gapSize: 0.3 });
+    this.dashBadMat = new THREE.LineDashedMaterial({ color: 0xff3030, dashSize: 0.45, gapSize: 0.3 });
+    // Кольца-предупреждения под проблемными объектами: красное пульсирует, жёлтое — постоянное
+    this.alertGeo = new THREE.RingGeometry(1.25, 1.6, 40);
+    this.alertGeo.userData.shared = true;
+    const am = color => new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, depthWrite: false, depthTest: false });
+    this.alertMat = { bad: am(STATUS.bad), warn: am(STATUS.warn) };
+    this.alertMat.warn.opacity = 0.6;
     this.toeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
 
     this.selRing = new THREE.Mesh(new THREE.RingGeometry(1.35, 1.6, 40), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false, depthTest: false }));
@@ -289,6 +300,12 @@ export class GameScene {
     this.ghostRing.position.y = 0.05;
     this.ghostRing.visible = false;
     this.fxGroup.add(this.ghostRing);
+    // Предпросмотр зоны дренирования и запасов при перетаскивании скважины из палитры
+    this.ghostDrain = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.22, depthWrite: false, side: THREE.DoubleSide }));
+    this.ghostDrain.renderOrder = 5;
+    this.ghostDrain.visible = false;
+    this.ghostInfo = null;
+    this.fxGroup.add(this.ghostDrain);
 
     this.applyMode();
     this.resize();
@@ -301,11 +318,22 @@ export class GameScene {
   resize() {
     const w = this.container.clientWidth || window.innerWidth, h = this.container.clientHeight || window.innerHeight;
     this.renderer.setSize(w, h, false);
+    // на телефоне подписи объектов мельче, чтобы не закрывали карту
+    this.labelK = Math.min(w, h) <= 500 ? 0.7 : 1;
     this.camera.aspect = w / h;
     // Сдвиг картинки влево, когда справа открыта вкладка итогов
     if (this.shiftPx) this.camera.setViewOffset(w, h, this.shiftPx, 0, w, h);
     else this.camera.clearViewOffset();
     this.camera.updateProjectionMatrix();
+  }
+
+  setTheme(light) {
+    this.light = light;
+    const bg = light ? BG.light : BG.dark;
+    this.scene.background.setHex(bg);
+    this.scene.fog.color.setHex(bg);
+    this.outer?.material.color.setHex(light ? OUTER.light : OUTER.dark);
+    this.ground?.material.uniforms.tundra.value.set(...TUNDRA[light ? 'light' : 'dark']);
   }
 
   setShift(px) {
@@ -368,7 +396,7 @@ export class GameScene {
     for (const id of [...this.items.keys()]) this.removeItem(id);
 
     this.dataTex?.dispose();
-    this.outer = new THREE.Mesh(new THREE.PlaneGeometry(260, 260), new THREE.MeshLambertMaterial({ color: 0x0c201c, transparent: true }));
+    this.outer = new THREE.Mesh(new THREE.PlaneGeometry(260, 260), new THREE.MeshLambertMaterial({ color: this.light ? OUTER.light : OUTER.dark, transparent: true }));
     this.outer.rotation.x = -Math.PI / 2;
     this.outer.position.y = -0.05;
     this.fieldGroup.add(this.outer);
@@ -398,7 +426,7 @@ export class GameScene {
         data: { value: null }, mask: { value: new THREE.Vector4() },
         levels: { value: new Array(MAX_LEV).fill(0) }, nLev: { value: 0 },
         cols: { value: Array.from({ length: MAX_LEV + 1 }, () => new THREE.Vector3()) },
-        oilOnly: { value: 0 }, oilT: { value: 0.5 }, tundra: { value: new THREE.Vector3(0.2, 0.27, 0.23) },
+        oilOnly: { value: 0 }, oilT: { value: 0.5 }, tundra: { value: new THREE.Vector3(...TUNDRA[this.light ? 'light' : 'dark']) },
         opacity: { value: 1 }, lightDir: { value: L },
       }]),
     });
@@ -636,6 +664,7 @@ export class GameScene {
       if (it && (it.type !== o.type || it.labelText !== o.label)) { this.removeItem(o.id); it = null; }
       if (!it) it = this.createItem(o);
       it.group.position.set(o.x, this.surfY(o.x, o.z), o.z);
+      it.label.scale.set(2.4 * this.labelK, 0.75 * this.labelK, 1);
       let st = 'ok';
       if (isWell(o.type)) {
         const w = an.wellById.get(o.id);
@@ -647,6 +676,7 @@ export class GameScene {
       it.light.material.color.setHex(STATUS[st]);
       it.light.scale.setScalar(1);
       if (st === 'bad') this.badLights.push(it.light);
+      it.st = st;
     }
     for (const id of [...this.items.keys()]) if (!seen.has(id)) this.removeItem(id);
 
@@ -663,6 +693,15 @@ export class GameScene {
 
     const selObj = selected?.kind === 'obj' ? selected.id : null;
     for (const o of state.objects) {
+      const st = this.items.get(o.id).st;
+      if (st === 'bad' || st === 'warn') {
+        const ring = new THREE.Mesh(this.alertGeo, this.alertMat[st]);
+        ring.rotation.x = -Math.PI / 2;
+        ring.position.set(o.x, this.surfY(o.x, o.z) + 0.06, o.z);
+        ring.scale.setScalar(HIT_R[o.type] / 1.2 * 1.15);
+        ring.renderOrder = 5;
+        this.dynGroup.add(ring);
+      }
       if (isProducer(o.type)) {
         const len = o.type === 'horiz' ? o.len / CELL_M : 0;
         const drain = new THREE.Mesh(this.drapedStadium(o.x, o.z, o.type === 'horiz' ? o.angle : 0, len, DRAIN_R_M / CELL_M, 0.05 + (o.id % 7) * 0.002), this.drainMat[o.type + (o.id === selObj ? 'Sel' : '')]);
@@ -670,7 +709,8 @@ export class GameScene {
       }
       if (o.type === 'horiz') {
         const t = toePoint(o);
-        const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(this.drapedLine(o, t, 0.1)), this.dashMat);
+        const crossed = an.wellById.get(o.id)?.status === 'cross';
+        const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(this.drapedLine(o, t, 0.1)), crossed ? this.dashBadMat : this.dashMat);
         line.computeLineDistances();
         const toe = new THREE.Mesh(new THREE.SphereGeometry(o.id === selObj ? 0.55 : 0.42, 14, 10), this.toeMat);
         toe.position.set(t.x, this.surfY(t.x, t.z) + 0.45, t.z);
@@ -800,7 +840,9 @@ export class GameScene {
     return this.raycaster.ray.intersectPlane(this.groundPlane, p) ? { x: p.x, z: p.z } : null;
   }
 
-  showGhost(type, x, z, ok) {
+  // info (для добывающих): { len, angle, text } — зона дренирования и подпись с запасами
+  showGhost(type, x, z, ok, info) {
+    this.showGhostDrain(x, z, info);
     if (!this.ghost || this.ghost.userData.type !== type) {
       if (this.ghost) this.fxGroup.remove(this.ghost);
       const g = buildModel(type);
@@ -822,6 +864,24 @@ export class GameScene {
   hideGhost() {
     if (this.ghost) this.ghost.visible = false;
     this.ghostRing.visible = false;
+    this.showGhostDrain();
+  }
+
+  showGhostDrain(x, z, info) {
+    this.ghostDrain.visible = !!info;
+    if (this.ghostInfo) this.ghostInfo.visible = !!info;
+    if (!info) return;
+    this.ghostDrain.geometry.dispose();
+    this.ghostDrain.geometry = this.drapedStadium(x, z, info.angle || 0, (info.len || 0) / CELL_M, DRAIN_R_M / CELL_M, 0.07);
+    if (this.ghostInfo?.userData.text !== info.text) {
+      if (this.ghostInfo) { this.fxGroup.remove(this.ghostInfo); this.ghostInfo.material.map.dispose(); this.ghostInfo.material.dispose(); }
+      this.ghostInfo = makeLabel(info.text);
+      this.ghostInfo.userData.text = info.text;
+      this.ghostInfo.scale.multiplyScalar(this.labelK);
+      this.fxGroup.add(this.ghostInfo);
+    }
+    this.ghostInfo.visible = true;
+    this.ghostInfo.position.set(x, this.surfY(x, z) + 3.4, z);
   }
 
   setRubber(a, b) {
@@ -846,6 +906,7 @@ export class GameScene {
     this.controls.update();
     const k = 1 + 0.35 * Math.sin(t * 6);
     for (const l of this.badLights) l.scale.setScalar(k);
+    this.alertMat.bad.opacity = 0.45 + 0.4 * Math.sin(t * 5) ** 2;
     if (this.selRing.visible) this.selRing.material.opacity = 0.65 + 0.3 * Math.sin(t * 4);
     if (this.flow) {
       const f = 0.5 + 0.5 * Math.sin(t * 10);
