@@ -437,7 +437,7 @@ body.viewing #palette, body.viewing #btnCalc { visibility: hidden; }
 #rules .el-head, #rules .elements { margin-left: 12px; margin-right: 12px; }
 .el-head { font-size: 10px; color: var(--oil-hi); }
 
-.lb-head { text-transform: uppercase; }
+.lb-head { text-transform: uppercase; -webkit-touch-callout: none; user-select: none; -webkit-user-select: none; }
 #leaderboard .lb-head { font-size: 16px; background: var(--t4); padding: 12px 14px; margin-bottom: 6px; }
 #leaderboard { border-color: var(--t3); }
 .lb-list .sc, .hero-num, .calc-year, .t-v { font-family: var(--head); font-weight: 600; }

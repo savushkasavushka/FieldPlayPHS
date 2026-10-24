@@ -668,13 +668,16 @@ function renderLeaderboard() {
     ${app.scores.length ? '<div class="lb-hint">Коснитесь имени — откроется поле игрока</div>' : ''}`;
 }
 
-// Скрытая кнопка: долгое нажатие на заголовок «Рейтинг» показывает эталонную расстановку
+// Скрытая кнопка: удержание заголовка «Рейтинг» 10 секунд показывает эталонную расстановку
+const ETALON_HOLD_MS = 10000;
 let lbPress = null, lbFired = false, swallowClick = false;
+// на телефоне долгое касание иначе открывает контекстное меню и прерывает удержание
+$('#leaderboard').addEventListener('contextmenu', e => { if (e.target.closest('.lb-head')) e.preventDefault(); });
 $('#leaderboard').addEventListener('pointerdown', e => {
   if (!e.target.closest('.lb-head')) return;
   clearTimeout(lbPress);
   lbFired = false;
-  lbPress = setTimeout(() => { lbPress = null; lbFired = true; showEtalon(); }, 900);
+  lbPress = setTimeout(() => { lbPress = null; lbFired = true; showEtalon(); }, ETALON_HOLD_MS);
 });
 for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) {
   $('#leaderboard').addEventListener(ev, () => {
