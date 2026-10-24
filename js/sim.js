@@ -16,6 +16,10 @@ export const PIPE_COST_PER_KM = 22;   // млн ₽/км
 export const MAX_GATHER_M = 2500;     // предельная длина сбора от скважины до ДНС/УПН
 export const DRAIN_R_M = 450;         // радиус зоны дренирования
 export const SUPPORT_R_M = 900;       // радиус влияния нагнетательной скважины
+export const MIN_BORE_M = 100;        // минимальное сближение горизонтального ствола с другой скважиной
+// Дебит жидкости q = k·kh/μ (м³/сут), не больше cap. Подобрано так, чтобы пиковый отбор был ~7% запасов в год
+export const RATE = { k: 0.03, cap: 250 };
+const FAC_OPEX = 0.02;                // содержание объектов: доля их стоимости в год
 export const HORIZ = { min: 300, max: 1500, step: 50, def: 800 };
 export const START_YEAR = 2027;
 export const YEARS = 20;
@@ -48,6 +52,16 @@ function segDist(px, pz, ax, az, bx, bz) {
   let t = L2 > 0 ? ((px - ax) * dx + (pz - az) * dz) / L2 : 0;
   t = Math.max(0, Math.min(1, t));
   return Math.hypot(px - (ax + t * dx), pz - (az + t * dz));
+}
+
+// Расстояние между отрезками на плане (0, если пересекаются)
+function segSegDist(a1, a2, b1, b2) {
+  const cr = (p, q, r) => (q.x - p.x) * (r.z - p.z) - (q.z - p.z) * (r.x - p.x);
+  const d1 = cr(b1, b2, a1), d2 = cr(b1, b2, a2), d3 = cr(a1, a2, b1), d4 = cr(a1, a2, b2);
+  if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))) return 0;
+  return Math.min(
+    segDist(a1.x, a1.z, b1.x, b1.z, b2.x, b2.z), segDist(a2.x, a2.z, b1.x, b1.z, b2.x, b2.z),
+    segDist(b1.x, b1.z, a1.x, a1.z, a2.x, a2.z), segDist(b2.x, b2.z, a1.x, a1.z, a2.x, a2.z));
 }
 
 function wellSegment(o) {
@@ -158,6 +172,18 @@ export function analyze(state, field, sc) {
     wells.push(w);
   }
 
+  // Горизонтальный ствол не может пройти через другую скважину: при сближении меньше 100 м обе не бурятся
+  for (let i = 0; i < wells.length; i++) for (let j = i + 1; j < wells.length; j++) {
+    const a = wells[i], b = wells[j];
+    if (a.type !== 'horiz' && b.type !== 'horiz') continue;
+    const [A1, A2] = wellSegment(a.obj), [B1, B2] = wellSegment(b.obj);
+    if (segSegDist(A1, A2, B1, B2) * CELL_M >= MIN_BORE_M) continue;
+    for (const [w, other] of [[a, b], [b, a]]) {
+      w.status = 'cross';
+      w.reason = `Ствол проходит ближе ${MIN_BORE_M} м от ${other.obj.label}: стволы пересекутся. Разверните или укоротите горизонтальный участок`;
+    }
+  }
+
   const { pvt, reservoir: res } = sc;
   const M = pvt.muO / pvt.muW;
   const Ed = Math.max(0.35, 0.65 - 0.1 * Math.log10(M)); // коэффициент вытеснения
@@ -198,7 +224,7 @@ export function analyze(state, field, sc) {
     const waterFrac = wSum > 0 ? wWater / wSum : 1;
     let mult = 1;
     if (p.type === 'horiz') mult = 1 + (p.obj.len / 300) * Math.min(2, 12 / Math.max(hAvg, 1));
-    const q0 = Math.min(500, 0.12 * kh / pvt.muO * mult); // м³/сут жидкости
+    const q0 = Math.min(RATE.cap, RATE.k * kh / pvt.muO * mult); // м³/сут жидкости
     const E = Ed * (res.edep + (res.ewf - res.edep) * S); // конечный КИН зоны
     let s = 1 + 0.012 * (M - 1) + 1.2 * waterFrac;
     if (dmin < 300) s += 0.8 * (1 - dmin / 300); // ранний прорыв от близкой нагнетательной
@@ -300,7 +326,7 @@ export function simulate(an, field, sc) {
       rev = Y.oilT * e.price / 1e6;
       npzB = Math.min(Y.oilT, npzCapT) * e.npzUplift / 1e6;
       ndpi = rev * e.ndpi;
-      opex = Y.liq * e.opexLiq / 1e6 * (an.gtesOk ? 0.8 : 1) + Y.activeP * e.opexWell + injActive * e.opexInj + facCapex * 0.04;
+      opex = Y.liq * e.opexLiq / 1e6 * (an.gtesOk ? 0.8 : 1) + Y.activeP * e.opexWell + injActive * e.opexInj + facCapex * FAC_OPEX;
       flare = an.gtesOk ? 0 : gas / 1000 * e.flareFine / 1e6;
       const ebitda = rev + npzB - ndpi - opex - flare;
       if (ebitda < 0 && Y.y >= 3) {
@@ -365,6 +391,8 @@ export function buildHints(an, sim, sc) {
   if (noconn.length) add('bad', `Не подключены: ${names(noconn)}. Соедините их трубопроводом 🔗 с ДНС или УПН.`);
   const toolong = an.wells.filter(w => w.status === 'toolong');
   if (toolong.length) add('bad', `${names(toolong)}: больше 2,5 км до ДНС/УПН. Поставьте ДНС поближе.`);
+  const cross = an.wells.filter(w => w.status === 'cross');
+  if (cross.length) add('bad', `${names(cross)}: стволы пересекаются или проходят ближе ${MIN_BORE_M} м друг от друга. Разверните или укоротите горизонтальный участок.`);
   const noout = an.wells.filter(w => w.status === 'nooutlet');
   if (noout.length) add('bad', `${names(noout)}: нефть некуда отдавать. ${noout[0].reason}.`);
   for (const o of an.objs) {

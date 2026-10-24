@@ -23,7 +23,7 @@ export const SCENARIOS = [
       decline: 0.14, edep: 0.35, ewf: 0.75,
     },
     pvt: { muO: 1.8, muW: 0.45, bo: 1.25, rho: 0.84, gor: 70, pb: 9.5 },
-    econ: { price: 30000, ndpi: 0.38, opexLiq: 700, opexWell: 5, opexInj: 3, flareFine: 2500, npzUplift: 3500, discount: 0.12 },
+    econ: { price: 30000, ndpi: 0.38, opexLiq: 120, opexWell: 2.5, opexInj: 1.5, flareFine: 2500, npzUplift: 3500, discount: 0.12 },
     export: { x: 0.15, y: 2.0 },
   },
   {
@@ -41,7 +41,7 @@ export const SCENARIOS = [
       decline: 0.16, edep: 0.35, ewf: 0.75,
     },
     pvt: { muO: 2.5, muW: 0.45, bo: 1.18, rho: 0.85, gor: 55, pb: 8.0 },
-    econ: { price: 30000, ndpi: 0.38, opexLiq: 700, opexWell: 5, opexInj: 3, flareFine: 2500, npzUplift: 3500, discount: 0.12 },
+    econ: { price: 30000, ndpi: 0.38, opexLiq: 120, opexWell: 2.5, opexInj: 1.5, flareFine: 2500, npzUplift: 3500, discount: 0.12 },
     export: { x: 2.0, y: 3.85 },
   },
   {
@@ -55,11 +55,11 @@ export const SCENARIOS = [
     reservoir: {
       domes: [{ x: 1.9, y: 2.1, amp: 45, sx: 0.9, sy: 1.1 }, { x: 2.8, y: 1.4, amp: 20, sx: 0.5, sy: 0.5 }],
       baseTop: 1250, owc: 1232, topNoise: 4,
-      hGross: 16, kMean: 700, kVar: 0.7, phiMean: 0.27, soMean: 0.75,
+      hGross: 16, kMean: 1500, kVar: 0.7, phiMean: 0.27, soMean: 0.75,
       decline: 0.30, edep: 0.25, ewf: 0.70,
     },
     pvt: { muO: 35, muW: 0.6, bo: 1.06, rho: 0.93, gor: 15, pb: 4.0 },
-    econ: { price: 24000, ndpi: 0.30, opexLiq: 700, opexWell: 5, opexInj: 3, flareFine: 2500, npzUplift: 3500, discount: 0.12 },
+    econ: { price: 24000, ndpi: 0.30, opexLiq: 120, opexWell: 2.5, opexInj: 1.5, flareFine: 2500, npzUplift: 3500, discount: 0.12 },
     export: { x: 0.2, y: 0.4 },
   },
   {
@@ -77,7 +77,7 @@ export const SCENARIOS = [
       decline: 0.15, edep: 0.35, ewf: 0.75,
     },
     pvt: { muO: 1.2, muW: 0.4, bo: 1.45, rho: 0.80, gor: 260, pb: 18 },
-    econ: { price: 30000, ndpi: 0.38, opexLiq: 700, opexWell: 5, opexInj: 3, flareFine: 3000, npzUplift: 3500, discount: 0.12 },
+    econ: { price: 30000, ndpi: 0.38, opexLiq: 120, opexWell: 2.5, opexInj: 1.5, flareFine: 3000, npzUplift: 3500, discount: 0.12 },
     export: { x: 0.15, y: 0.3 },
   },
 ];

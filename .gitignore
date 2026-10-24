@@ -2,3 +2,5 @@
 *.jpg
 _bench.html
 _par.html
+_prof.html
+_cross.html

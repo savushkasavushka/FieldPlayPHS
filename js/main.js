@@ -53,7 +53,7 @@ const PARAMS = [
   { g: 'pvt', k: 'gor', name: 'Газовый фактор', unit: 'м³/т', min: 5, max: 400, step: 5 },
 ];
 const LABEL = { vert: ['prod', 'Д'], horiz: ['prod', 'Д'], inj: ['inj', 'Н'], dns: ['dns', 'ДНС'], upn: ['upn', 'УПН'], npz: ['npz', 'НПЗ'], gtes: ['gtes', 'ГТЭС'] };
-const STATUS_TEXT = { ok: '✅ В работе', noconn: '⛔ Не подключена', toolong: '⛔ Далеко до ДНС/УПН', nooutlet: '⛔ Нет выхода к сдаче нефти' };
+const STATUS_TEXT = { ok: '✅ В работе', noconn: '⛔ Не подключена', toolong: '⛔ Далеко до ДНС/УПН', nooutlet: '⛔ Нет выхода к сдаче нефти', cross: '⛔ Пересечение стволов' };
 const lim = GRID_N / 2 - 0.6;
 
 const app = {
